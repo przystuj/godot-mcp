@@ -89,15 +89,15 @@ Godot MCP enables AI agents to launch the Godot editor, run projects, capture de
 ### Claude Code
 
 ```bash
-claude mcp add godot -- npx @coding-solo/godot-mcp
+claude mcp add godot -e GODOT_PROJECT_ROOT=/path/to/your/project -- npx @coding-solo/godot-mcp
 ```
 
-That's it. Restart Claude Code and your Godot MCP tools are available.
+Restart Claude Code and your Godot MCP tools are available for the configured project root.
 
 With environment variables:
 
 ```bash
-claude mcp add godot -e GODOT_PATH=/path/to/godot -e DEBUG=true -- npx @coding-solo/godot-mcp
+claude mcp add godot -e GODOT_PROJECT_ROOT=/path/to/your/project -e GODOT_PATH=/path/to/godot -- npx @coding-solo/godot-mcp
 ```
 
 <details>
@@ -112,25 +112,9 @@ Add to your Cline MCP settings file (`~/Library/Application Support/Code/User/gl
       "command": "npx",
       "args": ["@coding-solo/godot-mcp"],
       "env": {
-        "DEBUG": "true"
+        "GODOT_PROJECT_ROOT": "/path/to/your/project"
       },
-      "disabled": false,
-      "autoApprove": [
-        "launch_editor",
-        "run_project",
-        "get_debug_output",
-        "stop_project",
-        "get_godot_version",
-        "list_projects",
-        "get_project_info",
-        "create_scene",
-        "add_node",
-        "load_sprite",
-        "export_mesh_library",
-        "save_scene",
-        "get_uid",
-        "update_project_uids"
-      ]
+      "disabled": false
     }
   }
 }
@@ -152,6 +136,8 @@ Add to your Cline MCP settings file (`~/Library/Application Support/Code/User/gl
 4. Click "Add"
 5. You may need to press the refresh button in the top right corner of the MCP server card to populate the tool list
 
+For project tools, configure `GODOT_PROJECT_ROOT` using project-specific configuration below.
+
 **Using Project-Specific Configuration:**
 
 Create a file at `.cursor/mcp.json` in your project directory:
@@ -163,7 +149,7 @@ Create a file at `.cursor/mcp.json` in your project directory:
       "command": "npx",
       "args": ["@coding-solo/godot-mcp"],
       "env": {
-        "DEBUG": "true"
+        "GODOT_PROJECT_ROOT": "/path/to/your/project"
       }
     }
   }
@@ -184,8 +170,9 @@ For any MCP-compatible client, use this configuration:
       "command": "npx",
       "args": ["@coding-solo/godot-mcp"],
       "env": {
+        "GODOT_PROJECT_ROOT": "/path/to/your/project",
         "GODOT_PATH": "/path/to/godot",
-        "DEBUG": "true"
+        "DEBUG": "false"
       }
     }
   }
@@ -199,7 +186,10 @@ For any MCP-compatible client, use this configuration:
 | Variable | Description |
 |----------|-------------|
 | `GODOT_PATH` | Path to the Godot executable (overrides automatic detection) |
+| `GODOT_PROJECT_ROOT` | Required allowlist root for project tools. Set this to your Godot project directory or a parent directory containing trusted projects. |
+| `GODOT_PROJECT_ROOTS` | Optional allowlist of multiple roots separated by the platform path delimiter (`;` on Windows, `:` on macOS/Linux). Overrides `GODOT_PROJECT_ROOT`. |
 | `DEBUG` | Set to `"true"` to enable detailed server-side debug logging |
+| `GODOT_DEBUG` | Set to `"true"` to pass `--debug-godot` to bundled Godot operations. This can print environment and filesystem details, so leave it off by default. |
 
 <details>
 <summary><strong>Building from Source</strong></summary>
@@ -229,6 +219,7 @@ The bundled script accepts operation type and parameters as JSON, allowing for f
 
 - **Godot Not Found**: Set the `GODOT_PATH` environment variable to your Godot executable path
 - **Connection Issues**: Ensure the server is running and restart your AI assistant
+- **Project Path Not Allowed**: Set `GODOT_PROJECT_ROOT` to your Godot project directory or an allowed parent directory
 - **Invalid Project Path**: Ensure the path points to a directory containing a `project.godot` file
 - **Build Issues**: Make sure all dependencies are installed by running `npm install`
 
@@ -237,7 +228,7 @@ The bundled script accepts operation type and parameters as JSON, allowing for f
 
 - Ensure the MCP server shows up and is enabled in Cursor settings (Settings > MCP)
 - MCP tools can only be run using the Agent chat profile (Cursor Pro or Business subscription)
-- Use "Yolo Mode" to automatically run MCP tool requests
+- Keep manual approval enabled for tools that launch Godot or modify project files
 
 </details>
 

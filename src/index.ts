@@ -8,8 +8,8 @@
  */
 
 import { fileURLToPath } from 'url';
-import { join, dirname, basename, normalize } from 'path';
-import { existsSync, readdirSync, mkdirSync } from 'fs';
+import { join, dirname, basename, normalize, resolve, relative, isAbsolute, delimiter } from 'path';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'fs';
 import { spawn, execFile } from 'child_process';
 import { promisify } from 'util';
 
@@ -24,7 +24,7 @@ import {
 
 // Check if debug mode is enabled
 const DEBUG_MODE: boolean = process.env.DEBUG === 'true';
-const GODOT_DEBUG_MODE: boolean = true; // Always use GODOT DEBUG MODE
+const GODOT_DEBUG_MODE: boolean = process.env.GODOT_DEBUG === 'true';
 
 const execFileAsync = promisify(execFile);
 
@@ -49,6 +49,7 @@ interface GodotServerConfig {
   debugMode?: boolean;
   godotDebugMode?: boolean;
   strictPathValidation?: boolean; // New option to control path validation behavior
+  allowedProjectRoots?: string[];
 }
 
 /**
@@ -68,6 +69,8 @@ class GodotServer {
   private operationsScriptPath: string;
   private validatedPaths: Map<string, boolean> = new Map();
   private strictPathValidation: boolean = false;
+  private allowedProjectRoots: string[] = [];
+  private godotDebugMode: boolean = GODOT_DEBUG_MODE;
 
   /**
    * Parameter name mappings between snake_case and camelCase
@@ -116,6 +119,9 @@ class GodotServer {
       if (config.strictPathValidation !== undefined) {
         this.strictPathValidation = config.strictPathValidation;
       }
+      if (config.allowedProjectRoots !== undefined) {
+        this.allowedProjectRoots = this.normalizeAllowedProjectRoots(config.allowedProjectRoots);
+      }
 
       // Store and validate custom Godot path if provided
       if (config.godotPath) {
@@ -129,6 +135,11 @@ class GodotServer {
           this.godotPath = null; // Reset to trigger auto-detection later
         }
       }
+    }
+    this.godotDebugMode = godotDebugMode;
+
+    if (this.allowedProjectRoots.length === 0) {
+      this.allowedProjectRoots = this.loadAllowedProjectRootsFromEnv();
     }
 
     // Set the path to the operations script
@@ -202,16 +213,101 @@ class GodotServer {
   }
 
   /**
-   * Validate a path to prevent path traversal attacks
+   * Load filesystem roots that MCP tool calls are allowed to touch.
+   * Configure one root with GODOT_PROJECT_ROOT or several with GODOT_PROJECT_ROOTS.
    */
+  private loadAllowedProjectRootsFromEnv(): string[] {
+    const rawRoots = process.env.GODOT_PROJECT_ROOTS ?? process.env.GODOT_PROJECT_ROOT;
+    if (!rawRoots) {
+      return [];
+    }
+
+    return this.normalizeAllowedProjectRoots(rawRoots.split(delimiter));
+  }
+
+  private normalizeAllowedProjectRoots(roots: string[]): string[] {
+    const normalizedRoots = roots
+      .map((root) => root.trim())
+      .filter(Boolean)
+      .map((root) => this.resolveFilesystemPath(root));
+
+    return Array.from(new Set(normalizedRoots));
+  }
+
+  private resolveFilesystemPath(path: string): string {
+    const resolved = resolve(normalize(path));
+    try {
+      return realpathSync.native(resolved);
+    } catch {
+      return resolved;
+    }
+  }
+
+  private normalizeForComparison(path: string): string {
+    return process.platform === 'win32' ? path.toLowerCase() : path;
+  }
+
+  private isWithinAllowedProjectRoots(path: string): boolean {
+    const resolvedPath = this.resolveFilesystemPath(path);
+    const comparablePath = this.normalizeForComparison(resolvedPath);
+
+    return this.allowedProjectRoots.some((root) => {
+      const comparableRoot = this.normalizeForComparison(root);
+      if (comparablePath === comparableRoot) {
+        return true;
+      }
+
+      const relativePath = relative(comparableRoot, comparablePath);
+      return relativePath !== '' && !relativePath.startsWith('..') && !isAbsolute(relativePath);
+    });
+  }
+
+  private validateFilesystemPath(path: string): string | null {
+    if (typeof path !== 'string' || !path.trim() || path.includes('\0')) {
+      return null;
+    }
+
+    if (this.allowedProjectRoots.length === 0) {
+      return null;
+    }
+
+    const resolvedPath = this.resolveFilesystemPath(path);
+    return this.isWithinAllowedProjectRoots(resolvedPath) ? resolvedPath : null;
+  }
+
+  private validateProjectPath(path: string): string | null {
+    return this.validateFilesystemPath(path);
+  }
+
+  private validateDirectoryPath(path: string): string | null {
+    return this.validateFilesystemPath(path);
+  }
+
+  private stripResourcePrefix(path: string): string {
+    return path.startsWith('res://') ? path.slice('res://'.length) : path;
+  }
+
   private validatePath(path: string): boolean {
-    // Basic validation to prevent path traversal
-    if (!path || path.includes('..')) {
+    if (typeof path !== 'string' || !path.trim() || path.includes('\0')) {
       return false;
     }
 
-    // Add more validation as needed
-    return true;
+    const relativePath = this.stripResourcePrefix(path);
+    if (
+      !relativePath ||
+      relativePath.includes('://') ||
+      relativePath.includes(':') ||
+      isAbsolute(relativePath)
+    ) {
+      return false;
+    }
+
+    const normalizedPath = normalize(relativePath);
+    return normalizedPath !== '..' && !normalizedPath.startsWith(`..${'\\'}`) && !normalizedPath.startsWith('../');
+  }
+
+  private toProjectRelativePath(path: string): string {
+    return this.stripResourcePrefix(path);
   }
 
   /**
@@ -486,6 +582,12 @@ class GodotServer {
     params: OperationParams,
     projectPath: string
   ): Promise<{ stdout: string; stderr: string }> {
+    const validatedProjectPath = this.validateProjectPath(projectPath);
+    if (!validatedProjectPath) {
+      throw new Error('Project path is outside the configured GODOT_PROJECT_ROOT allowlist');
+    }
+    projectPath = validatedProjectPath;
+
     this.logDebug(`Executing operation: ${operation} in project: ${projectPath}`);
     this.logDebug(`Original operation params: ${JSON.stringify(params)}`);
 
@@ -519,7 +621,7 @@ class GodotServer {
       ];
 
       
-      if (GODOT_DEBUG_MODE) {
+      if (this.godotDebugMode) {
         args.push('--debug-godot');
       }
 
@@ -982,12 +1084,14 @@ class GodotServer {
       );
     }
 
-    if (!this.validatePath(args.projectPath)) {
+    const projectPath = this.validateProjectPath(args.projectPath);
+    if (!projectPath) {
       return this.createErrorResponse(
-        'Invalid project path',
-        ['Provide a valid path without ".." or other potentially unsafe characters']
+        'Project path is not allowed',
+        ['Set GODOT_PROJECT_ROOT to your Godot project directory or GODOT_PROJECT_ROOTS to allowed parent directories']
       );
     }
+    args.projectPath = projectPath;
 
     try {
       // Ensure godotPath is set
@@ -1061,12 +1165,14 @@ class GodotServer {
       );
     }
 
-    if (!this.validatePath(args.projectPath)) {
+    const projectPath = this.validateProjectPath(args.projectPath);
+    if (!projectPath) {
       return this.createErrorResponse(
-        'Invalid project path',
-        ['Provide a valid path without ".." or other potentially unsafe characters']
+        'Project path is not allowed',
+        ['Set GODOT_PROJECT_ROOT to your Godot project directory or GODOT_PROJECT_ROOTS to allowed parent directories']
       );
     }
+    args.projectPath = projectPath;
 
     try {
       // Check if the project directory exists and contains a project.godot file
@@ -1275,12 +1381,14 @@ class GodotServer {
       );
     }
 
-    if (!this.validatePath(args.directory)) {
+    const directory = this.validateDirectoryPath(args.directory);
+    if (!directory) {
       return this.createErrorResponse(
-        'Invalid directory path',
-        ['Provide a valid path without ".." or other potentially unsafe characters']
+        'Directory path is not allowed',
+        ['Set GODOT_PROJECT_ROOT to your Godot project directory or GODOT_PROJECT_ROOTS to allowed parent directories']
       );
     }
+    args.directory = directory;
 
     try {
       this.logDebug(`Listing Godot projects in directory: ${args.directory}`);
@@ -1389,12 +1497,14 @@ class GodotServer {
       );
     }
   
-    if (!this.validatePath(args.projectPath)) {
+    const projectPath = this.validateProjectPath(args.projectPath);
+    if (!projectPath) {
       return this.createErrorResponse(
-        'Invalid project path',
-        ['Provide a valid path without ".." or other potentially unsafe characters']
+        'Project path is not allowed',
+        ['Set GODOT_PROJECT_ROOT to your Godot project directory or GODOT_PROJECT_ROOTS to allowed parent directories']
       );
     }
+    args.projectPath = projectPath;
   
     try {
       // Ensure godotPath is set
@@ -1435,8 +1545,7 @@ class GodotServer {
       // Extract project name from project.godot file
       let projectName = basename(args.projectPath);
       try {
-        const fs = require('fs');
-        const projectFileContent = fs.readFileSync(projectFile, 'utf8');
+        const projectFileContent = readFileSync(projectFile, 'utf8');
         const configNameMatch = projectFileContent.match(/config\/name="([^"]+)"/);
         if (configNameMatch && configNameMatch[1]) {
           projectName = configNameMatch[1];
@@ -1490,12 +1599,14 @@ class GodotServer {
       );
     }
 
-    if (!this.validatePath(args.projectPath) || !this.validatePath(args.scenePath)) {
+    const projectPath = this.validateProjectPath(args.projectPath);
+    if (!projectPath || !this.validatePath(args.scenePath)) {
       return this.createErrorResponse(
         'Invalid path',
-        ['Provide valid paths without ".." or other potentially unsafe characters']
+        ['Set GODOT_PROJECT_ROOT to an allowed project directory and use project-relative scene paths']
       );
     }
+    args.projectPath = projectPath;
 
     const rootNodeType = args.rootNodeType || 'Node2D';
     if (!this.validateClassName(rootNodeType)) {
@@ -1572,12 +1683,14 @@ class GodotServer {
       );
     }
 
-    if (!this.validatePath(args.projectPath) || !this.validatePath(args.scenePath)) {
+    const projectPath = this.validateProjectPath(args.projectPath);
+    if (!projectPath || !this.validatePath(args.scenePath)) {
       return this.createErrorResponse(
         'Invalid path',
-        ['Provide valid paths without ".." or other potentially unsafe characters']
+        ['Set GODOT_PROJECT_ROOT to an allowed project directory and use project-relative scene paths']
       );
     }
+    args.projectPath = projectPath;
 
     if (!this.validateClassName(args.nodeType)) {
       return this.createErrorResponse(
@@ -1600,7 +1713,7 @@ class GodotServer {
       }
 
       // Check if the scene file exists
-      const scenePath = join(args.projectPath, args.scenePath);
+      const scenePath = join(args.projectPath, this.toProjectRelativePath(args.scenePath));
       if (!existsSync(scenePath)) {
         return this.createErrorResponse(
           `Scene file does not exist: ${args.scenePath}`,
@@ -1620,6 +1733,12 @@ class GodotServer {
 
       // Add optional parameters
       if (args.parentNodePath) {
+        if (!this.validatePath(args.parentNodePath)) {
+          return this.createErrorResponse(
+            'Invalid parent node path',
+            ['Use a project-relative node path such as root or root/Player']
+          );
+        }
         params.parentNodePath = args.parentNodePath;
       }
 
@@ -1675,17 +1794,19 @@ class GodotServer {
       );
     }
 
+    const projectPath = this.validateProjectPath(args.projectPath);
     if (
-      !this.validatePath(args.projectPath) ||
+      !projectPath ||
       !this.validatePath(args.scenePath) ||
       !this.validatePath(args.nodePath) ||
       !this.validatePath(args.texturePath)
     ) {
       return this.createErrorResponse(
         'Invalid path',
-        ['Provide valid paths without ".." or other potentially unsafe characters']
+        ['Set GODOT_PROJECT_ROOT to an allowed project directory and use project-relative scene, node, and texture paths']
       );
     }
+    args.projectPath = projectPath;
 
     try {
       // Check if the project directory exists and contains a project.godot file
@@ -1701,7 +1822,7 @@ class GodotServer {
       }
 
       // Check if the scene file exists
-      const scenePath = join(args.projectPath, args.scenePath);
+      const scenePath = join(args.projectPath, this.toProjectRelativePath(args.scenePath));
       if (!existsSync(scenePath)) {
         return this.createErrorResponse(
           `Scene file does not exist: ${args.scenePath}`,
@@ -1713,7 +1834,7 @@ class GodotServer {
       }
 
       // Check if the texture file exists
-      const texturePath = join(args.projectPath, args.texturePath);
+      const texturePath = join(args.projectPath, this.toProjectRelativePath(args.texturePath));
       if (!existsSync(texturePath)) {
         return this.createErrorResponse(
           `Texture file does not exist: ${args.texturePath}`,
@@ -1779,16 +1900,18 @@ class GodotServer {
       );
     }
 
+    const projectPath = this.validateProjectPath(args.projectPath);
     if (
-      !this.validatePath(args.projectPath) ||
+      !projectPath ||
       !this.validatePath(args.scenePath) ||
       !this.validatePath(args.outputPath)
     ) {
       return this.createErrorResponse(
         'Invalid path',
-        ['Provide valid paths without ".." or other potentially unsafe characters']
+        ['Set GODOT_PROJECT_ROOT to an allowed project directory and use project-relative scene and output paths']
       );
     }
+    args.projectPath = projectPath;
 
     try {
       // Check if the project directory exists and contains a project.godot file
@@ -1804,7 +1927,7 @@ class GodotServer {
       }
 
       // Check if the scene file exists
-      const scenePath = join(args.projectPath, args.scenePath);
+      const scenePath = join(args.projectPath, this.toProjectRelativePath(args.scenePath));
       if (!existsSync(scenePath)) {
         return this.createErrorResponse(
           `Scene file does not exist: ${args.scenePath}`,
@@ -1874,12 +1997,14 @@ class GodotServer {
       );
     }
 
-    if (!this.validatePath(args.projectPath) || !this.validatePath(args.scenePath)) {
+    const projectPath = this.validateProjectPath(args.projectPath);
+    if (!projectPath || !this.validatePath(args.scenePath)) {
       return this.createErrorResponse(
         'Invalid path',
-        ['Provide valid paths without ".." or other potentially unsafe characters']
+        ['Set GODOT_PROJECT_ROOT to an allowed project directory and use project-relative scene paths']
       );
     }
+    args.projectPath = projectPath;
 
     // If newPath is provided, validate it
     if (args.newPath && !this.validatePath(args.newPath)) {
@@ -1903,7 +2028,7 @@ class GodotServer {
       }
 
       // Check if the scene file exists
-      const scenePath = join(args.projectPath, args.scenePath);
+      const scenePath = join(args.projectPath, this.toProjectRelativePath(args.scenePath));
       if (!existsSync(scenePath)) {
         return this.createErrorResponse(
           `Scene file does not exist: ${args.scenePath}`,
@@ -1973,12 +2098,14 @@ class GodotServer {
       );
     }
 
-    if (!this.validatePath(args.projectPath) || !this.validatePath(args.filePath)) {
+    const projectPath = this.validateProjectPath(args.projectPath);
+    if (!projectPath || !this.validatePath(args.filePath)) {
       return this.createErrorResponse(
         'Invalid path',
-        ['Provide valid paths without ".." or other potentially unsafe characters']
+        ['Set GODOT_PROJECT_ROOT to an allowed project directory and use project-relative file paths']
       );
     }
+    args.projectPath = projectPath;
 
     try {
       // Ensure godotPath is set
@@ -2008,7 +2135,7 @@ class GodotServer {
       }
 
       // Check if the file exists
-      const filePath = join(args.projectPath, args.filePath);
+      const filePath = join(args.projectPath, this.toProjectRelativePath(args.filePath));
       if (!existsSync(filePath)) {
         return this.createErrorResponse(
           `File does not exist: ${args.filePath}`,
@@ -2082,12 +2209,14 @@ class GodotServer {
       );
     }
 
-    if (!this.validatePath(args.projectPath)) {
+    const projectPath = this.validateProjectPath(args.projectPath);
+    if (!projectPath) {
       return this.createErrorResponse(
-        'Invalid project path',
-        ['Provide a valid path without ".." or other potentially unsafe characters']
+        'Project path is not allowed',
+        ['Set GODOT_PROJECT_ROOT to your Godot project directory or GODOT_PROJECT_ROOTS to allowed parent directories']
       );
     }
+    args.projectPath = projectPath;
 
     try {
       // Ensure godotPath is set
@@ -2200,6 +2329,11 @@ class GodotServer {
       }
 
       console.error(`[SERVER] Using Godot at: ${this.godotPath}`);
+      if (this.allowedProjectRoots.length > 0) {
+        console.error(`[SERVER] Allowed project roots: ${this.allowedProjectRoots.join(', ')}`);
+      } else {
+        console.error('[SERVER] No project roots configured. Project tools will reject requests until GODOT_PROJECT_ROOT or GODOT_PROJECT_ROOTS is set.');
+      }
 
       const transport = new StdioServerTransport();
       await this.server.connect(transport);
