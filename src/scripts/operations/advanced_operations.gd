@@ -14,8 +14,16 @@ func execute(operation, params):
             wait_for_signal(params)
         "assert_node_property":
             assert_node_property(params)
-        "create_script":
-            create_script(params)
+        "set_node_properties":
+            set_node_properties(params)
+        "apply_scene_operations":
+            apply_scene_operations(params)
+        "create_scene_from_spec":
+            create_scene_from_spec(params)
+        "configure_project_settings":
+            configure_project_settings(params)
+        "batch_resource_edit":
+            batch_resource_edit(params)
         "attach_script":
             attach_script(params)
         "inspect_script":
@@ -64,18 +72,12 @@ func execute(operation, params):
             configure_layer_names("2d_render", params)
         "configure_3d_layers":
             configure_layer_names("3d_render", params)
-        "set_export_preset":
-            set_export_preset(params)
         "reimport_asset":
             reimport_asset(params)
         "list_imported_assets":
             list_imported_assets(params)
         "get_import_metadata":
             get_import_metadata(params)
-        "set_texture_import_mode":
-            set_import_options(params)
-        "set_model_import_options":
-            set_import_options(params)
         "get_project_errors":
             get_project_errors(params)
         "get_missing_resources":
@@ -147,15 +149,6 @@ func read_text(path):
     file.close()
     return text
 
-func write_text(path, content):
-    var res_path = to_res_path(path)
-    ensure_parent_dir(res_path)
-    var file = FileAccess.open(res_path, FileAccess.WRITE)
-    if not file:
-        fail("Failed to open file for writing: " + res_path)
-    file.store_string(str(content))
-    file.close()
-
 func get_scene_node(scene_root, node_path):
     var normalized_path = str(node_path)
     if normalized_path == "" or normalized_path == "." or normalized_path == "root":
@@ -188,6 +181,7 @@ func load_scene_root(scene_path):
 
 func save_scene_root(scene_root, scene_path):
     var full_scene_path = to_res_path(scene_path)
+    ensure_parent_dir(full_scene_path)
     var packed_scene = PackedScene.new()
     var pack_result = packed_scene.pack(scene_root)
     if pack_result != OK:
@@ -297,6 +291,208 @@ func node_to_json(scene_root, node):
         "children": children
     }
 
+func instantiate_node(node_type):
+    var type_name = str(node_type)
+    if not ClassDB.class_exists(type_name) or not ClassDB.can_instantiate(type_name):
+        fail("Node type cannot be instantiated: " + type_name)
+    var node = ClassDB.instantiate(type_name)
+    if not node or not (node is Node):
+        fail("Class is not a Node: " + type_name)
+    return node
+
+func apply_properties(target, properties):
+    if typeof(properties) != TYPE_DICTIONARY:
+        fail("properties must be an object")
+    var applied = {}
+    for property_name in properties.keys():
+        var normalized_name = str(property_name)
+        if not object_has_property(target, normalized_name):
+            fail("Object does not expose property: " + normalized_name)
+        var converted_value = json_to_variant(properties[property_name])
+        target.set(normalized_name, converted_value)
+        applied[normalized_name] = variant_to_json(target.get(normalized_name))
+    return applied
+
+func apply_script_to_node(node, script_path):
+    var full_script_path = to_res_path(script_path)
+    var script = load(full_script_path)
+    if not script:
+        fail("Failed to load script: " + full_script_path)
+    node.set_script(script)
+    return full_script_path
+
+func add_node_from_spec(scene_root, spec):
+    var parent_path = str(spec.get("parent_node_path", spec.get("parentNodePath", "root")))
+    var parent = get_scene_node(scene_root, parent_path)
+    if not parent:
+        fail("Parent node not found: " + parent_path)
+    var node = instantiate_node(spec.get("node_type", spec.get("nodeType", "Node")))
+    node.name = str(spec.get("node_name", spec.get("nodeName", node.get_class())))
+    parent.add_child(node)
+    set_owner_recursive(node, scene_root)
+    if spec.has("script_path") or spec.has("scriptPath"):
+        apply_script_to_node(node, spec.get("script_path", spec.get("scriptPath", "")))
+    if spec.has("properties"):
+        apply_properties(node, spec.properties)
+    if spec.has("groups") and typeof(spec.groups) == TYPE_ARRAY:
+        for group_name in spec.groups:
+            node.add_to_group(str(group_name), true)
+    return node
+
+func connect_scene_signal(scene_root, connection_spec):
+    var source_path = str(connection_spec.get("source_node_path", connection_spec.get("sourceNodePath", "")))
+    var target_path = str(connection_spec.get("target_node_path", connection_spec.get("targetNodePath", "")))
+    var signal_name = str(connection_spec.get("signal_name", connection_spec.get("signalName", "")))
+    var method_name = str(connection_spec.get("method_name", connection_spec.get("methodName", "")))
+    var source_node = get_scene_node(scene_root, source_path)
+    if not source_node:
+        fail("Source node not found: " + source_path)
+    var target_node = get_scene_node(scene_root, target_path)
+    if not target_node:
+        fail("Target node not found: " + target_path)
+    if not source_node.has_signal(signal_name):
+        fail("Source node does not expose signal: " + signal_name)
+    if not target_node.has_method(method_name):
+        fail("Target node does not expose method: " + method_name)
+    var callable = Callable(target_node, method_name)
+    var already_connected = source_node.is_connected(signal_name, callable)
+    if not already_connected:
+        var connect_error = source_node.connect(signal_name, callable, CONNECT_PERSIST)
+        if connect_error != OK:
+            fail("Failed to connect signal: " + error_name(connect_error))
+    return {
+        "sourceNodePath": source_path,
+        "signalName": signal_name,
+        "targetNodePath": target_path,
+        "methodName": method_name,
+        "alreadyConnected": already_connected
+    }
+
+func set_node_properties(params):
+    if not params.has("scene_path") or not params.has("changes") or typeof(params.changes) != TYPE_ARRAY:
+        fail("scene_path and changes array are required")
+    var scene_root = load_scene_root(params.scene_path)
+    var results = []
+    for change in params.changes:
+        var target_path = str(change.get("node_path", change.get("nodePath", "")))
+        var target_node = get_scene_node(scene_root, target_path)
+        if not target_node:
+            fail("Node not found: " + target_path)
+        var applied = apply_properties(target_node, change.get("properties", {}))
+        results.append({"nodePath": target_path, "properties": applied})
+    save_scene_root(scene_root, params.scene_path)
+    print_json({"scenePath": to_res_path(params.scene_path), "changes": results})
+
+func apply_scene_operation(scene_root, operation):
+    var operation_type = str(operation.get("type", ""))
+    match operation_type:
+        "add_node":
+            var added_node = add_node_from_spec(scene_root, operation)
+            return {"type": operation_type, "nodePath": get_mcp_node_path(scene_root, added_node)}
+        "set_properties":
+            var set_target_path = str(operation.get("node_path", operation.get("nodePath", "")))
+            var set_target = get_scene_node(scene_root, set_target_path)
+            if not set_target:
+                fail("Node not found: " + set_target_path)
+            return {"type": operation_type, "nodePath": set_target_path, "properties": apply_properties(set_target, operation.get("properties", {}))}
+        "attach_script":
+            var script_target_path = str(operation.get("node_path", operation.get("nodePath", "")))
+            var script_target = get_scene_node(scene_root, script_target_path)
+            if not script_target:
+                fail("Node not found: " + script_target_path)
+            var script_path = apply_script_to_node(script_target, operation.get("script_path", operation.get("scriptPath", "")))
+            return {"type": operation_type, "nodePath": script_target_path, "scriptPath": script_path}
+        "connect_signal":
+            var connection_result = connect_scene_signal(scene_root, operation)
+            connection_result["type"] = operation_type
+            return connection_result
+        "remove_node":
+            var remove_path = str(operation.get("node_path", operation.get("nodePath", "")))
+            var remove_target = get_scene_node(scene_root, remove_path)
+            if not remove_target or remove_target == scene_root:
+                fail("Node not found or cannot remove root: " + remove_path)
+            remove_target.get_parent().remove_child(remove_target)
+            return {"type": operation_type, "nodePath": remove_path}
+        "rename_node":
+            var rename_path = str(operation.get("node_path", operation.get("nodePath", "")))
+            var rename_target = get_scene_node(scene_root, rename_path)
+            if not rename_target:
+                fail("Node not found: " + rename_path)
+            var new_name = str(operation.get("new_name", operation.get("newName", "")))
+            rename_target.name = new_name
+            return {"type": operation_type, "oldNodePath": rename_path, "newName": new_name}
+        "duplicate_node":
+            var duplicate_path = str(operation.get("node_path", operation.get("nodePath", "")))
+            var duplicate_source = get_scene_node(scene_root, duplicate_path)
+            if not duplicate_source or duplicate_source == scene_root:
+                fail("Node not found or cannot duplicate root: " + duplicate_path)
+            var duplicate = duplicate_source.duplicate()
+            if operation.has("new_name") or operation.has("newName"):
+                duplicate.name = str(operation.get("new_name", operation.get("newName", "")))
+            duplicate_source.get_parent().add_child(duplicate)
+            set_owner_recursive(duplicate, scene_root)
+            return {"type": operation_type, "sourceNodePath": duplicate_path, "duplicatePath": get_mcp_node_path(scene_root, duplicate)}
+        "move_node":
+            var move_path = str(operation.get("node_path", operation.get("nodePath", "")))
+            var move_target = get_scene_node(scene_root, move_path)
+            if not move_target or move_target == scene_root:
+                fail("Node not found or cannot move root: " + move_path)
+            var target_index = int(operation.get("target_index", operation.get("targetIndex", 0)))
+            move_target.get_parent().move_child(move_target, target_index)
+            return {"type": operation_type, "nodePath": move_path, "targetIndex": target_index}
+        "reparent_node":
+            var reparent_path = str(operation.get("node_path", operation.get("nodePath", "")))
+            var new_parent_path = str(operation.get("new_parent_node_path", operation.get("newParentNodePath", "")))
+            var reparent_target = get_scene_node(scene_root, reparent_path)
+            var new_parent = get_scene_node(scene_root, new_parent_path)
+            if not reparent_target or reparent_target == scene_root:
+                fail("Node not found or cannot reparent root: " + reparent_path)
+            if not new_parent:
+                fail("New parent node not found: " + new_parent_path)
+            reparent_target.get_parent().remove_child(reparent_target)
+            new_parent.add_child(reparent_target)
+            set_owner_recursive(reparent_target, scene_root)
+            return {"type": operation_type, "nodePath": get_mcp_node_path(scene_root, reparent_target), "newParentNodePath": new_parent_path}
+        _:
+            fail("Unsupported scene operation type: " + operation_type)
+    return {"type": operation_type}
+
+func apply_scene_operations(params):
+    if not params.has("scene_path") or not params.has("operations") or typeof(params.operations) != TYPE_ARRAY:
+        fail("scene_path and operations array are required")
+    var scene_root = load_scene_root(params.scene_path)
+    var results = []
+    for operation in params.operations:
+        results.append(apply_scene_operation(scene_root, operation))
+    save_scene_root(scene_root, params.scene_path)
+    print_json({"scenePath": to_res_path(params.scene_path), "operations": results})
+
+func create_scene_from_spec(params):
+    if not params.has("scene_path"):
+        fail("scene_path is required")
+    var root_type = str(params.get("root_node_type", params.get("rootNodeType", "Node2D")))
+    var scene_root = instantiate_node(root_type)
+    scene_root.name = str(params.get("root_name", params.get("rootName", "root")))
+    scene_root.owner = scene_root
+    if params.has("root_properties") or params.has("rootProperties"):
+        apply_properties(scene_root, params.get("root_properties", params.get("rootProperties", {})))
+    var created_nodes = []
+    if params.has("nodes") and typeof(params.nodes) == TYPE_ARRAY:
+        for node_spec in params.nodes:
+            var created_node = add_node_from_spec(scene_root, node_spec)
+            created_nodes.append({"nodePath": get_mcp_node_path(scene_root, created_node), "type": created_node.get_class()})
+    var connections = []
+    if params.has("connections") and typeof(params.connections) == TYPE_ARRAY:
+        for connection_spec in params.connections:
+            connections.append(connect_scene_signal(scene_root, connection_spec))
+    save_scene_root(scene_root, params.scene_path)
+    print_json({
+        "scenePath": to_res_path(params.scene_path),
+        "root": node_to_json(scene_root, scene_root),
+        "createdNodes": created_nodes,
+        "connections": connections
+    })
+
 func run_scene_for_seconds(params):
     var seconds = float(params.get("seconds", 1.0))
     var scene_root = load_scene_root(params.scene_path)
@@ -391,18 +587,6 @@ func assert_node_property(params):
         "actual": actual,
         "expected": expected
     })
-
-func create_script(params):
-    var script_path = to_res_path(params.script_path)
-    var content = str(params.get("content", ""))
-    if content == "":
-        var extends_class = str(params.get("extends_class", "Node"))
-        content = "extends " + extends_class + "\n"
-        if params.has("class_name"):
-            content += "class_name " + str(params.class_name) + "\n"
-        content += "\n"
-    write_text(script_path, content)
-    print_json({"scriptPath": script_path, "bytes": content.length()})
 
 func attach_script(params):
     var scene_root = load_scene_root(params.scene_path)
@@ -558,6 +742,79 @@ func instantiate_resource(resource_type):
         fail("Class is not a Resource: " + resource_type)
     return resource
 
+func apply_resource_properties(resource, properties):
+    if typeof(properties) != TYPE_DICTIONARY:
+        fail("properties must be an object")
+    var applied = {}
+    for property_name in properties.keys():
+        var normalized_name = str(property_name)
+        if not object_has_property(resource, normalized_name):
+            fail("Resource does not expose property: " + normalized_name)
+        resource.set(normalized_name, json_to_variant(properties[property_name]))
+        applied[normalized_name] = variant_to_json(resource.get(normalized_name))
+    return applied
+
+func batch_resource_edit(params):
+    if not params.has("operations") or typeof(params.operations) != TYPE_ARRAY:
+        fail("operations array is required")
+    var results = []
+    for operation in params.operations:
+        var operation_type = str(operation.get("type", ""))
+        match operation_type:
+            "create":
+                var create_output_path = to_res_path(operation.get("output_path", operation.get("outputPath", "")))
+                var created_resource = instantiate_resource(str(operation.get("resource_type", operation.get("resourceType", "Resource"))))
+                if operation.has("properties"):
+                    apply_resource_properties(created_resource, operation.properties)
+                ensure_parent_dir(create_output_path)
+                var create_save_error = ResourceSaver.save(created_resource, create_output_path)
+                if create_save_error != OK:
+                    fail("Failed to save resource: " + error_name(create_save_error))
+                results.append({"type": operation_type, "resourcePath": create_output_path, "resourceType": created_resource.get_class()})
+            "set_properties":
+                var edit_resource_path = to_res_path(operation.get("resource_path", operation.get("resourcePath", "")))
+                var edit_resource = load(edit_resource_path)
+                if not edit_resource:
+                    fail("Failed to load resource: " + edit_resource_path)
+                var applied = apply_resource_properties(edit_resource, operation.get("properties", {}))
+                var edit_save_error = ResourceSaver.save(edit_resource, edit_resource_path)
+                if edit_save_error != OK:
+                    fail("Failed to save resource: " + error_name(edit_save_error))
+                results.append({"type": operation_type, "resourcePath": edit_resource_path, "properties": applied})
+            "create_material":
+                var material_output_path = to_res_path(operation.get("output_path", operation.get("outputPath", "")))
+                var material_type = str(operation.get("material_type", operation.get("materialType", "StandardMaterial3D")))
+                var material = instantiate_resource(material_type)
+                if operation.has("properties"):
+                    apply_resource_properties(material, operation.properties)
+                ensure_parent_dir(material_output_path)
+                var material_save_error = ResourceSaver.save(material, material_output_path)
+                if material_save_error != OK:
+                    fail("Failed to save material: " + error_name(material_save_error))
+                results.append({"type": operation_type, "resourcePath": material_output_path, "resourceType": material.get_class()})
+            "create_theme":
+                var theme_output_path = to_res_path(operation.get("output_path", operation.get("outputPath", "")))
+                var theme = Theme.new()
+                ensure_parent_dir(theme_output_path)
+                var theme_save_error = ResourceSaver.save(theme, theme_output_path)
+                if theme_save_error != OK:
+                    fail("Failed to save theme: " + error_name(theme_save_error))
+                results.append({"type": operation_type, "resourcePath": theme_output_path, "resourceType": theme.get_class()})
+            "create_animation_library":
+                var library_output_path = to_res_path(operation.get("output_path", operation.get("outputPath", "")))
+                var library = AnimationLibrary.new()
+                if operation.has("animations") and typeof(operation.animations) == TYPE_ARRAY:
+                    for animation_name in operation.animations:
+                        library.add_animation(str(animation_name), Animation.new())
+                ensure_parent_dir(library_output_path)
+                var library_save_error = ResourceSaver.save(library, library_output_path)
+                if library_save_error != OK:
+                    fail("Failed to save animation library: " + error_name(library_save_error))
+                results.append({"type": operation_type, "resourcePath": library_output_path, "resourceType": library.get_class(), "animations": library.get_animation_list()})
+            _:
+                fail("Unsupported resource operation type: " + operation_type)
+    print_json({"operations": results})
+
 func create_resource(params):
     var output_path = to_res_path(params.output_path)
     var resource = instantiate_resource(str(params.resource_type))
@@ -620,6 +877,190 @@ func save_project_settings():
     if save_error != OK:
         fail("Failed to save project settings: " + error_name(save_error))
 
+func parse_keycode(value):
+    if typeof(value) == TYPE_INT:
+        return int(value)
+    var key_text = str(value)
+    if key_text.is_valid_int():
+        return int(key_text)
+    var keycode = OS.find_keycode_from_string(key_text)
+    if keycode == 0:
+        keycode = OS.find_keycode_from_string(key_text.to_upper())
+    return keycode
+
+func parse_mouse_button(value):
+    if typeof(value) == TYPE_INT:
+        return int(value)
+    var button_name = str(value).to_lower()
+    match button_name:
+        "left":
+            return MOUSE_BUTTON_LEFT
+        "right":
+            return MOUSE_BUTTON_RIGHT
+        "middle":
+            return MOUSE_BUTTON_MIDDLE
+        "wheel_up":
+            return MOUSE_BUTTON_WHEEL_UP
+        "wheel_down":
+            return MOUSE_BUTTON_WHEEL_DOWN
+        _:
+            if button_name.is_valid_int():
+                return int(button_name)
+            return 0
+
+func input_event_from_json(data):
+    if typeof(data) != TYPE_DICTIONARY or not data.has("type"):
+        return null
+    var event_type = str(data.type).to_lower()
+    match event_type:
+        "key":
+            var key_event = InputEventKey.new()
+            var key_value = data.get("keycode", data.get("key", data.get("physical_keycode", 0)))
+            var keycode = parse_keycode(key_value)
+            if keycode == 0:
+                return null
+            if data.has("physical_keycode"):
+                key_event.physical_keycode = parse_keycode(data.physical_keycode)
+            if data.has("keycode") or data.has("key"):
+                key_event.keycode = keycode
+            if not data.has("physical_keycode") and not data.has("keycode") and not data.has("key"):
+                key_event.keycode = keycode
+            key_event.ctrl_pressed = bool(data.get("ctrl", data.get("ctrl_pressed", data.get("ctrlPressed", false))))
+            key_event.alt_pressed = bool(data.get("alt", data.get("alt_pressed", data.get("altPressed", false))))
+            key_event.shift_pressed = bool(data.get("shift", data.get("shift_pressed", data.get("shiftPressed", false))))
+            key_event.meta_pressed = bool(data.get("meta", data.get("meta_pressed", data.get("metaPressed", false))))
+            return key_event
+        "mouse_button":
+            var mouse_event = InputEventMouseButton.new()
+            var button_index = parse_mouse_button(data.get("button_index", data.get("buttonIndex", data.get("button", 0))))
+            if button_index == 0:
+                return null
+            mouse_event.button_index = button_index
+            return mouse_event
+        _:
+            return null
+
+func configure_input_action_from_spec(spec):
+    var action_name = str(spec.get("action_name", spec.get("actionName", "")))
+    if action_name == "":
+        fail("Input action name is required")
+    var deadzone = float(spec.get("deadzone", 0.5))
+    var replace_events = bool(spec.get("replace", true))
+    if not InputMap.has_action(action_name):
+        InputMap.add_action(action_name, deadzone)
+    else:
+        InputMap.action_set_deadzone(action_name, deadzone)
+    if replace_events:
+        InputMap.action_erase_events(action_name)
+    if spec.has("events") and typeof(spec.events) == TYPE_ARRAY:
+        for event_data in spec.events:
+            var input_event = input_event_from_json(event_data)
+            if not input_event:
+                fail("Invalid input event: " + JSON.stringify(event_data))
+            InputMap.action_add_event(action_name, input_event)
+    var events = InputMap.action_get_events(action_name)
+    ProjectSettings.set_setting("input/" + action_name, {
+        "deadzone": InputMap.action_get_deadzone(action_name),
+        "events": events
+    })
+    var event_texts = []
+    for saved_event in events:
+        event_texts.append(saved_event.as_text())
+    return {"actionName": action_name, "deadzone": InputMap.action_get_deadzone(action_name), "events": event_texts}
+
+func configure_autoload_from_spec(spec):
+    var autoload_name = str(spec.get("autoload_name", spec.get("autoloadName", "")))
+    var resource_path = to_res_path(spec.get("resource_path", spec.get("resourcePath", "")))
+    if autoload_name == "":
+        fail("Autoload name is required")
+    if not FileAccess.file_exists(resource_path):
+        fail("Autoload resource does not exist: " + resource_path)
+    var setting_value = resource_path
+    if bool(spec.get("singleton", true)):
+        setting_value = "*" + resource_path
+    ProjectSettings.set_setting("autoload/" + autoload_name, setting_value)
+    return {"autoloadName": autoload_name, "resourcePath": resource_path, "value": setting_value}
+
+func configure_layer_group(category, layers):
+    var configured = []
+    if typeof(layers) != TYPE_ARRAY:
+        fail("Layer group must be an array")
+    for layer in layers:
+        var index = int(layer.get("index", 0))
+        if index < 1 or index > 32:
+            fail("Layer index must be between 1 and 32")
+        var name = str(layer.get("name", ""))
+        var setting_name = "layer_names/" + category + "/layer_" + str(index)
+        ProjectSettings.set_setting(setting_name, name)
+        configured.append({"index": index, "name": name, "settingName": setting_name})
+    return configured
+
+func configure_project_settings(params):
+    var result = {
+        "settings": {},
+        "renderingSettings": {},
+        "layers": {},
+        "inputActions": [],
+        "autoloads": []
+    }
+    if params.has("settings") and typeof(params.settings) == TYPE_DICTIONARY:
+        for setting_key in params.settings.keys():
+            var setting_name = str(setting_key)
+            ProjectSettings.set_setting(setting_name, json_to_variant(params.settings[setting_key]))
+            result["settings"][setting_name] = variant_to_json(ProjectSettings.get_setting(setting_name))
+    if params.has("main_scene") or params.has("mainScene"):
+        var main_scene_path = to_res_path(params.get("main_scene", params.get("mainScene", "")))
+        if not FileAccess.file_exists(main_scene_path):
+            fail("Main scene does not exist: " + main_scene_path)
+        ProjectSettings.set_setting("application/run/main_scene", main_scene_path)
+        result["settings"]["application/run/main_scene"] = main_scene_path
+    if params.has("display_size") or params.has("displaySize"):
+        var display_size = params.get("display_size", params.get("displaySize", {}))
+        var width = int(display_size.get("width", 0))
+        var height = int(display_size.get("height", 0))
+        if width <= 0 or height <= 0:
+            fail("displaySize width and height must be positive")
+        ProjectSettings.set_setting("display/window/size/viewport_width", width)
+        ProjectSettings.set_setting("display/window/size/viewport_height", height)
+        if display_size.has("mode"):
+            ProjectSettings.set_setting("display/window/size/mode", int(display_size.mode))
+        result["settings"]["display/window/size/viewport_width"] = width
+        result["settings"]["display/window/size/viewport_height"] = height
+    if params.has("rendering_settings") or params.has("renderingSettings"):
+        var rendering_settings = params.get("rendering_settings", params.get("renderingSettings", {}))
+        for rendering_key in rendering_settings.keys():
+            var rendering_name = str(rendering_key)
+            if not rendering_name.begins_with("rendering/"):
+                fail("Rendering setting must start with rendering/: " + rendering_name)
+            ProjectSettings.set_setting(rendering_name, json_to_variant(rendering_settings[rendering_key]))
+            result["renderingSettings"][rendering_name] = variant_to_json(ProjectSettings.get_setting(rendering_name))
+    if params.has("layer_names") or params.has("layerNames"):
+        var layer_names = params.get("layer_names", params.get("layerNames", {}))
+        var layer_map = {
+            "physics2D": "2d_physics",
+            "render2D": "2d_render",
+            "render3D": "3d_render",
+            "2d_physics": "2d_physics",
+            "2d_render": "2d_render",
+            "3d_render": "3d_render"
+        }
+        for layer_key in layer_names.keys():
+            var mapped_layer = layer_map.get(str(layer_key), "")
+            if mapped_layer == "":
+                fail("Unsupported layer group: " + str(layer_key))
+            result["layers"][mapped_layer] = configure_layer_group(mapped_layer, layer_names[layer_key])
+    if params.has("input_actions") or params.has("inputActions"):
+        var input_actions = params.get("input_actions", params.get("inputActions", []))
+        if typeof(input_actions) != TYPE_ARRAY:
+            fail("inputActions must be an array")
+        for action_spec in input_actions:
+            result["inputActions"].append(configure_input_action_from_spec(action_spec))
+    if params.has("autoloads") and typeof(params.autoloads) == TYPE_ARRAY:
+        for autoload_spec in params.autoloads:
+            result["autoloads"].append(configure_autoload_from_spec(autoload_spec))
+    save_project_settings()
+    print_json(result)
+
 func set_main_scene(params):
     var scene_path = to_res_path(params.scene_path)
     if not FileAccess.file_exists(scene_path):
@@ -662,27 +1103,6 @@ func configure_layer_names(category, params):
     save_project_settings()
     print_json({"category": category, "layers": configured})
 
-func set_export_preset(params):
-    var config = ConfigFile.new()
-    var path = "res://export_presets.cfg"
-    if FileAccess.file_exists(path):
-        config.load(path)
-    var preset_index = int(params.get("preset_index", 0))
-    var section = "preset." + str(preset_index)
-    config.set_value(section, "name", str(params.name))
-    config.set_value(section, "platform", str(params.platform))
-    config.set_value(section, "runnable", bool(params.get("runnable", true)))
-    if params.has("export_path"):
-        config.set_value(section + ".options", "custom_template/release", "")
-        config.set_value(section, "export_path", str(params.export_path))
-    if params.has("options") and typeof(params.options) == TYPE_DICTIONARY:
-        for key in params.options.keys():
-            config.set_value(section + ".options", str(key), json_to_variant(params.options[key]))
-    var save_error = config.save(path)
-    if save_error != OK:
-        fail("Failed to save export preset: " + error_name(save_error))
-    print_json({"presetIndex": preset_index, "name": str(params.name), "platform": str(params.platform), "path": path})
-
 func imported_metadata_path(asset_path):
     return to_res_path(asset_path) + ".import"
 
@@ -720,20 +1140,6 @@ func list_imported_assets(params):
     print_json({"count": assets.size(), "assets": assets})
 
 func get_import_metadata(params):
-    print_json(parse_import_metadata(params.asset_path))
-
-func set_import_options(params):
-    var metadata_path = imported_metadata_path(params.asset_path)
-    var config = ConfigFile.new()
-    var load_error = config.load(metadata_path)
-    if load_error != OK:
-        fail("Import metadata does not exist: " + metadata_path)
-    if params.has("options") and typeof(params.options) == TYPE_DICTIONARY:
-        for key in params.options.keys():
-            config.set_value("params", str(key), json_to_variant(params.options[key]))
-    var save_error = config.save(metadata_path)
-    if save_error != OK:
-        fail("Failed to save import metadata: " + error_name(save_error))
     print_json(parse_import_metadata(params.asset_path))
 
 func collect_res_references(text):

@@ -92,12 +92,55 @@ export const ADVANCED_TOOLS: any[] = [
     expectedValue: jsonValue,
   }, ['scenePath', 'nodePath', 'propertyName', 'expectedValue']),
 
-  tool('create_script', 'Create a GDScript file', {
-    scriptPath,
-    extendsClass: { type: 'string', description: 'Base class for generated script content' },
-    className: { type: 'string', description: 'Optional class_name declaration' },
-    content: { type: 'string', description: 'Full script content. If omitted, a minimal script is generated.' },
-  }, ['scriptPath']),
+  tool('set_node_properties', 'Set properties on multiple nodes in one Godot load/save pass', {
+    scenePath,
+    changes: {
+      type: 'array',
+      items: { type: 'object' },
+      description: 'Array of { nodePath, properties } changes',
+    },
+  }, ['scenePath', 'changes']),
+  tool('apply_scene_operations', 'Apply multiple semantic scene operations in one Godot load/save pass', {
+    scenePath,
+    operations: {
+      type: 'array',
+      items: { type: 'object' },
+      description: 'Operations: add_node, set_properties, attach_script, connect_signal, remove_node, rename_node, duplicate_node, move_node, reparent_node',
+    },
+  }, ['scenePath', 'operations']),
+  tool('create_scene_from_spec', 'Create a scene, nodes, properties, scripts, groups, and signal connections from one structured spec', {
+    scenePath,
+    rootNodeType: { type: 'string', description: 'Root node class, default Node2D' },
+    rootName: { type: 'string', description: 'Root node name, default root' },
+    rootProperties: { type: 'object', description: 'Properties to set on the root node' },
+    nodes: {
+      type: 'array',
+      items: { type: 'object' },
+      description: 'Node specs: { parentNodePath, nodeType, nodeName, properties, scriptPath, groups }',
+    },
+    connections: {
+      type: 'array',
+      items: { type: 'object' },
+      description: 'Signal specs: { sourceNodePath, signalName, targetNodePath, methodName }',
+    },
+  }, ['scenePath']),
+  tool('configure_project_settings', 'Apply multiple project settings, rendering settings, layer names, input actions, and autoloads in one pass', {
+    settings: { type: 'object', description: 'Arbitrary ProjectSettings key/value pairs' },
+    mainScene: { type: 'string', description: 'Optional main scene path' },
+    displaySize: { type: 'object', description: '{ width, height, mode? }' },
+    renderingSettings: { type: 'object', description: 'Project settings under rendering/' },
+    layerNames: { type: 'object', description: 'Layer groups physics2D, render2D, render3D with arrays of { index, name }' },
+    inputActions: { type: 'array', items: { type: 'object' }, description: 'Input action specs' },
+    autoloads: { type: 'array', items: { type: 'object' }, description: 'Autoload specs' },
+  }, []),
+  tool('batch_resource_edit', 'Create or edit multiple Godot resources in one pass', {
+    operations: {
+      type: 'array',
+      items: { type: 'object' },
+      description: 'Operations: create, set_properties, create_material, create_theme, create_animation_library',
+    },
+  }, ['operations']),
+
   tool('attach_script', 'Attach a GDScript to a node and save the scene', {
     scenePath,
     nodePath,
@@ -199,14 +242,6 @@ export const ADVANCED_TOOLS: any[] = [
   tool('configure_3d_layers', 'Configure 3D render layer names', {
     layers: { type: 'array', items: { type: 'object' }, description: 'Array of { index: 1-32, name: string }' },
   }, ['layers']),
-  tool('set_export_preset', 'Create or update an export_presets.cfg preset', {
-    presetIndex: { type: 'number', description: 'Preset index, default 0' },
-    name: { type: 'string', description: 'Preset name' },
-    platform: { type: 'string', description: 'Godot export platform name' },
-    runnable: { type: 'boolean', description: 'Whether the preset is runnable' },
-    exportPath: { type: 'string', description: 'Optional export path' },
-    options: { type: 'object', description: 'Optional preset options' },
-  }, ['name', 'platform']),
 
   tool('reimport_asset', 'Validate an asset and return import metadata available to the editor', {
     assetPath: resourcePath,
@@ -215,14 +250,6 @@ export const ADVANCED_TOOLS: any[] = [
   tool('get_import_metadata', 'Read a single asset .import metadata file', {
     assetPath: resourcePath,
   }, ['assetPath']),
-  tool('set_texture_import_mode', 'Update params in a texture .import metadata file', {
-    assetPath: resourcePath,
-    options: { type: 'object', description: 'Import params to set' },
-  }, ['assetPath', 'options']),
-  tool('set_model_import_options', 'Update params in a model .import metadata file', {
-    assetPath: resourcePath,
-    options: { type: 'object', description: 'Import params to set' },
-  }, ['assetPath', 'options']),
 
   tool('get_project_errors', 'Load scenes/scripts and scan references for project-level errors', {}, []),
   tool('get_missing_resources', 'Scan project files for res:// references that do not exist', {}, []),
@@ -239,7 +266,11 @@ const SPECS: Record<string, AdvancedToolSpec> = Object.fromEntries([
   ['send_input_action', { required: ['actionName'], looseNameFields: ['actionName'] }],
   ['wait_for_signal', { required: ['scenePath', 'nodePath', 'signalName'], pathFields: ['scenePath'], existingPathFields: ['scenePath'], nodePathFields: ['nodePath'], identifierFields: ['signalName'] }],
   ['assert_node_property', { required: ['scenePath', 'nodePath', 'propertyName', 'expectedValue'], pathFields: ['scenePath'], existingPathFields: ['scenePath'], nodePathFields: ['nodePath'], propertyFields: ['propertyName'] }],
-  ['create_script', { required: ['scriptPath'], pathFields: ['scriptPath'], identifierFields: ['className'], looseNameFields: ['extendsClass'] }],
+  ['set_node_properties', { required: ['scenePath', 'changes'], pathFields: ['scenePath'], existingPathFields: ['scenePath'] }],
+  ['apply_scene_operations', { required: ['scenePath', 'operations'], pathFields: ['scenePath'], existingPathFields: ['scenePath'] }],
+  ['create_scene_from_spec', { required: ['scenePath'], pathFields: ['scenePath'], looseNameFields: ['rootNodeType'], identifierFields: ['rootName'] }],
+  ['configure_project_settings', { required: [] }],
+  ['batch_resource_edit', { required: ['operations'] }],
   ['attach_script', { required: ['scenePath', 'nodePath', 'scriptPath'], pathFields: ['scenePath', 'scriptPath'], existingPathFields: ['scenePath', 'scriptPath'], nodePathFields: ['nodePath'] }],
   ['inspect_script', { required: ['scriptPath'], pathFields: ['scriptPath'], existingPathFields: ['scriptPath'] }],
   ['list_script_methods', { required: ['scriptPath'], pathFields: ['scriptPath'], existingPathFields: ['scriptPath'] }],
@@ -264,12 +295,9 @@ const SPECS: Record<string, AdvancedToolSpec> = Object.fromEntries([
   ['configure_physics_layers', { required: ['layers'] }],
   ['configure_2d_layers', { required: ['layers'] }],
   ['configure_3d_layers', { required: ['layers'] }],
-  ['set_export_preset', { required: ['name', 'platform'] }],
   ['reimport_asset', { required: ['assetPath'], pathFields: ['assetPath'], existingPathFields: ['assetPath'] }],
   ['list_imported_assets', { required: [] }],
   ['get_import_metadata', { required: ['assetPath'], pathFields: ['assetPath'] }],
-  ['set_texture_import_mode', { required: ['assetPath', 'options'], pathFields: ['assetPath'], existingPathFields: ['assetPath'] }],
-  ['set_model_import_options', { required: ['assetPath', 'options'], pathFields: ['assetPath'], existingPathFields: ['assetPath'] }],
   ['get_project_errors', { required: [] }],
   ['get_missing_resources', { required: [] }],
   ['find_broken_scene_references', { required: [] }],
