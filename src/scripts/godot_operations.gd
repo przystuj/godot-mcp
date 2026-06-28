@@ -86,8 +86,9 @@ func _init():
         "resave_resources":
             resave_resources(params)
         _:
-            log_error("Unknown operation: " + operation)
-            quit(1)
+            if not dispatch_operation_module(operation, params):
+                log_error("Unknown operation: " + operation)
+                quit(1)
     
     quit()
 
@@ -101,6 +102,21 @@ func log_info(message):
 
 func log_error(message):
     printerr("[ERROR] " + message)
+
+func dispatch_operation_module(operation, params):
+    var base_dir = get_script().resource_path.get_base_dir()
+    var module_path = base_dir.path_join("operations/advanced_operations.gd")
+    var module_script = load(module_path)
+    if not module_script:
+        log_debug("Advanced operations module could not be loaded from: " + module_path)
+        return false
+
+    var module = module_script.new()
+    if not module.has_method("execute"):
+        log_error("Advanced operations module does not expose execute(operation, params)")
+        quit(1)
+
+    return module.execute(operation, params)
 
 func to_res_path(path):
     var res_path = str(path)

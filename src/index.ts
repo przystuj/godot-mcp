@@ -21,6 +21,7 @@ import {
   ListToolsRequestSchema,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
+import { ADVANCED_TOOLS, handleAdvancedTool, isAdvancedTool } from './advancedTools.js';
 
 // Check if debug mode is enabled
 const DEBUG_MODE: boolean = process.env.DEBUG === 'true';
@@ -94,6 +95,21 @@ class GodotServer {
     'action_name': 'actionName',
     'autoload_name': 'autoloadName',
     'resource_path': 'resourcePath',
+    'script_path': 'scriptPath',
+    'asset_path': 'assetPath',
+    'resource_type': 'resourceType',
+    'material_type': 'materialType',
+    'class_name': 'className',
+    'extends_class': 'extendsClass',
+    'expected_value': 'expectedValue',
+    'save_scene': 'saveScene',
+    'new_name': 'newName',
+    'target_index': 'targetIndex',
+    'new_parent_node_path': 'newParentNodePath',
+    'setting_name': 'settingName',
+    'preset_index': 'presetIndex',
+    'export_path': 'exportPath',
+    'timeout_seconds': 'timeoutSeconds',
     'include_properties': 'includeProperties',
     'include_signals': 'includeSignals',
     'output_path': 'outputPath',
@@ -1285,6 +1301,7 @@ class GodotServer {
             required: ['projectPath'],
           },
         },
+        ...ADVANCED_TOOLS,
       ],
     }));
 
@@ -1335,6 +1352,9 @@ class GodotServer {
         case 'update_project_uids':
           return await this.handleUpdateProjectUids(request.params.arguments);
         default:
+          if (isAdvancedTool(request.params.name)) {
+            return await handleAdvancedTool(this, request.params.name, request.params.arguments);
+          }
           throw new McpError(
             ErrorCode.MethodNotFound,
             `Unknown tool: ${request.params.name}`
