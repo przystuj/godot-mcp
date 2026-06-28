@@ -57,14 +57,28 @@ func _init():
     log_info("Executing operation: " + operation)
     
     match operation:
+        "inspect_scene":
+            inspect_scene(params)
         "create_scene":
             create_scene(params)
         "add_node":
             add_node(params)
+        "set_node_property":
+            set_node_property(params)
+        "connect_signal":
+            connect_signal_nodes(params)
         "load_sprite":
             load_sprite(params)
         "export_mesh_library":
             export_mesh_library(params)
+        "validate_scene":
+            validate_scene(params)
+        "validate_project":
+            validate_project(params)
+        "configure_input_action":
+            configure_input_action(params)
+        "add_autoload":
+            add_autoload(params)
         "save_scene":
             save_scene(params)
         "get_uid":
@@ -87,6 +101,190 @@ func log_info(message):
 
 func log_error(message):
     printerr("[ERROR] " + message)
+
+func to_res_path(path):
+    var res_path = str(path)
+    if not res_path.begins_with("res://"):
+        res_path = "res://" + res_path
+    return res_path
+
+func print_json(value):
+    print(JSON.stringify(value))
+
+func get_scene_node(scene_root, node_path):
+    var normalized_path = str(node_path)
+    if normalized_path == "" or normalized_path == "." or normalized_path == "root":
+        return scene_root
+    if normalized_path.begins_with("root/"):
+        normalized_path = normalized_path.substr(5)
+    return scene_root.get_node_or_null(normalized_path)
+
+func get_mcp_node_path(scene_root, node):
+    if node == scene_root:
+        return "root"
+    return "root/" + str(scene_root.get_path_to(node))
+
+func object_has_property(object, property_name):
+    for property in object.get_property_list():
+        if str(property.name) == str(property_name):
+            return true
+    return false
+
+func error_name(error_code):
+    if error_code == OK:
+        return "OK"
+    return str(error_code)
+
+func variant_to_json(value, depth := 0):
+    if depth > 4:
+        return str(value)
+
+    match typeof(value):
+        TYPE_NIL:
+            return null
+        TYPE_BOOL, TYPE_INT, TYPE_FLOAT, TYPE_STRING:
+            return value
+        TYPE_STRING_NAME:
+            return str(value)
+        TYPE_NODE_PATH:
+            return {
+                "type": "NodePath",
+                "path": str(value)
+            }
+        TYPE_VECTOR2:
+            return {
+                "type": "Vector2",
+                "x": value.x,
+                "y": value.y
+            }
+        TYPE_VECTOR2I:
+            return {
+                "type": "Vector2i",
+                "x": value.x,
+                "y": value.y
+            }
+        TYPE_VECTOR3:
+            return {
+                "type": "Vector3",
+                "x": value.x,
+                "y": value.y,
+                "z": value.z
+            }
+        TYPE_VECTOR3I:
+            return {
+                "type": "Vector3i",
+                "x": value.x,
+                "y": value.y,
+                "z": value.z
+            }
+        TYPE_VECTOR4:
+            return {
+                "type": "Vector4",
+                "x": value.x,
+                "y": value.y,
+                "z": value.z,
+                "w": value.w
+            }
+        TYPE_VECTOR4I:
+            return {
+                "type": "Vector4i",
+                "x": value.x,
+                "y": value.y,
+                "z": value.z,
+                "w": value.w
+            }
+        TYPE_RECT2:
+            return {
+                "type": "Rect2",
+                "position": variant_to_json(value.position, depth + 1),
+                "size": variant_to_json(value.size, depth + 1)
+            }
+        TYPE_RECT2I:
+            return {
+                "type": "Rect2i",
+                "position": variant_to_json(value.position, depth + 1),
+                "size": variant_to_json(value.size, depth + 1)
+            }
+        TYPE_COLOR:
+            return {
+                "type": "Color",
+                "r": value.r,
+                "g": value.g,
+                "b": value.b,
+                "a": value.a
+            }
+        TYPE_ARRAY:
+            var array_result = []
+            for item in value:
+                array_result.append(variant_to_json(item, depth + 1))
+            return array_result
+        TYPE_DICTIONARY:
+            var dictionary_result = {}
+            for key in value.keys():
+                dictionary_result[str(key)] = variant_to_json(value[key], depth + 1)
+            return dictionary_result
+        TYPE_OBJECT:
+            if value == null:
+                return null
+            if value is Resource:
+                return {
+                    "type": value.get_class(),
+                    "resourcePath": value.resource_path
+                }
+            if value is Node:
+                return {
+                    "type": value.get_class(),
+                    "name": value.name,
+                    "path": str(value.get_path())
+                }
+            return {
+                "type": value.get_class(),
+                "value": str(value)
+            }
+        _:
+            return str(value)
+
+func json_to_variant(value):
+    if typeof(value) == TYPE_ARRAY:
+        var converted_array = []
+        for item in value:
+            converted_array.append(json_to_variant(item))
+        return converted_array
+
+    if typeof(value) != TYPE_DICTIONARY or not value.has("type"):
+        if typeof(value) == TYPE_STRING and str(value).begins_with("res://"):
+            var loaded_resource = load(value)
+            if loaded_resource:
+                return loaded_resource
+        return value
+
+    var type_name = str(value.type).to_lower()
+    match type_name:
+        "vector2":
+            return Vector2(float(value.get("x", 0.0)), float(value.get("y", 0.0)))
+        "vector2i":
+            return Vector2i(int(value.get("x", 0)), int(value.get("y", 0)))
+        "vector3":
+            return Vector3(float(value.get("x", 0.0)), float(value.get("y", 0.0)), float(value.get("z", 0.0)))
+        "vector3i":
+            return Vector3i(int(value.get("x", 0)), int(value.get("y", 0)), int(value.get("z", 0)))
+        "vector4":
+            return Vector4(float(value.get("x", 0.0)), float(value.get("y", 0.0)), float(value.get("z", 0.0)), float(value.get("w", 0.0)))
+        "vector4i":
+            return Vector4i(int(value.get("x", 0)), int(value.get("y", 0)), int(value.get("z", 0)), int(value.get("w", 0)))
+        "color":
+            return Color(float(value.get("r", 0.0)), float(value.get("g", 0.0)), float(value.get("b", 0.0)), float(value.get("a", 1.0)))
+        "nodepath":
+            return NodePath(str(value.get("path", "")))
+        "stringname":
+            return StringName(str(value.get("name", value.get("value", ""))))
+        "resource":
+            var resource_path = str(value.get("path", value.get("resourcePath", "")))
+            if resource_path == "":
+                return null
+            return load(to_res_path(resource_path))
+        _:
+            return value
 
 # Get a script by registered class name.
 # Only looks up names via the project's global class registry. Raw paths
@@ -160,6 +358,517 @@ func instantiate_class(name_of_class):
         print("Successfully instantiated class: " + name_of_class + " of type: " + result.get_class())
     
     return result
+
+func append_scene_nodes(node, nodes):
+    nodes.append(node)
+    for child in node.get_children():
+        append_scene_nodes(child, nodes)
+
+func connection_to_json(scene_root, source_node, signal_name, connection):
+    var callable = connection.get("callable", null)
+    var target = null
+    var method_name = ""
+
+    if typeof(callable) == TYPE_CALLABLE and callable.is_valid():
+        target = callable.get_object()
+        method_name = str(callable.get_method())
+
+    var target_path = ""
+    if target is Node:
+        target_path = get_mcp_node_path(scene_root, target)
+
+    return {
+        "sourcePath": get_mcp_node_path(scene_root, source_node),
+        "signalName": str(signal_name),
+        "targetPath": target_path,
+        "methodName": method_name,
+        "flags": int(connection.get("flags", 0))
+    }
+
+func node_to_inspection(scene_root, node, include_properties, property_names, include_signals):
+    var node_data = {
+        "name": str(node.name),
+        "path": get_mcp_node_path(scene_root, node),
+        "type": node.get_class(),
+        "children": []
+    }
+
+    var script = node.get_script()
+    if script:
+        node_data["script"] = variant_to_json(script)
+
+    var groups = []
+    for group in node.get_groups():
+        groups.append(str(group))
+    node_data["groups"] = groups
+
+    if include_properties or property_names.size() > 0:
+        var properties = {}
+        for property in node.get_property_list():
+            var property_name = str(property.name)
+            var usage = int(property.get("usage", 0))
+            var should_include_property = property_name in property_names
+            if property_names.size() == 0 and include_properties:
+                should_include_property = (usage & PROPERTY_USAGE_STORAGE) != 0
+            if should_include_property:
+                properties[property_name] = variant_to_json(node.get(property_name))
+        node_data["properties"] = properties
+
+    if include_signals:
+        var connections = []
+        for signal_info in node.get_signal_list():
+            var signal_name = str(signal_info.name)
+            for connection in node.get_signal_connection_list(signal_name):
+                connections.append(connection_to_json(scene_root, node, signal_name, connection))
+        node_data["connections"] = connections
+
+    for child in node.get_children():
+        node_data["children"].append(node_to_inspection(scene_root, child, include_properties, property_names, include_signals))
+
+    return node_data
+
+func inspect_scene(params):
+    if not params.has("scene_path"):
+        printerr("Scene path is required")
+        quit(1)
+
+    var full_scene_path = to_res_path(params.scene_path)
+    if not FileAccess.file_exists(full_scene_path):
+        printerr("Scene file does not exist at: " + full_scene_path)
+        quit(1)
+
+    var scene = load(full_scene_path)
+    if not scene or not (scene is PackedScene):
+        printerr("Failed to load scene as PackedScene: " + full_scene_path)
+        quit(1)
+
+    var scene_root = scene.instantiate()
+    if not scene_root:
+        printerr("Failed to instantiate scene: " + full_scene_path)
+        quit(1)
+
+    var include_properties = bool(params.get("include_properties", false))
+    var include_signals = bool(params.get("include_signals", true))
+    var property_names = []
+    if params.has("property_names") and typeof(params.property_names) == TYPE_ARRAY:
+        for property_name in params.property_names:
+            property_names.append(str(property_name))
+
+    var nodes = []
+    append_scene_nodes(scene_root, nodes)
+
+    var result = {
+        "scenePath": full_scene_path,
+        "nodeCount": nodes.size(),
+        "root": node_to_inspection(scene_root, scene_root, include_properties, property_names, include_signals)
+    }
+
+    print_json(result)
+
+func set_node_property(params):
+    if not params.has("scene_path") or not params.has("node_path") or not params.has("property_name") or not params.has("value"):
+        printerr("scene_path, node_path, property_name, and value are required")
+        quit(1)
+
+    var full_scene_path = to_res_path(params.scene_path)
+    if not FileAccess.file_exists(full_scene_path):
+        printerr("Scene file does not exist at: " + full_scene_path)
+        quit(1)
+
+    var scene = load(full_scene_path)
+    if not scene or not (scene is PackedScene):
+        printerr("Failed to load scene as PackedScene: " + full_scene_path)
+        quit(1)
+
+    var scene_root = scene.instantiate()
+    if not scene_root:
+        printerr("Failed to instantiate scene: " + full_scene_path)
+        quit(1)
+
+    var node = get_scene_node(scene_root, params.node_path)
+    if not node:
+        printerr("Node not found: " + str(params.node_path))
+        quit(1)
+
+    var property_name = str(params.property_name)
+    if not object_has_property(node, property_name):
+        printerr("Node does not expose property: " + property_name)
+        quit(1)
+
+    var converted_value = json_to_variant(params.value)
+    if converted_value == null and typeof(params.value) == TYPE_DICTIONARY and str(params.value.get("type", "")).to_lower() == "resource":
+        printerr("Failed to load resource value for property: " + property_name)
+        quit(1)
+
+    node.set(property_name, converted_value)
+
+    var packed_scene = PackedScene.new()
+    var pack_result = packed_scene.pack(scene_root)
+    if pack_result != OK:
+        printerr("Failed to pack scene: " + error_name(pack_result))
+        quit(1)
+
+    var save_error = ResourceSaver.save(packed_scene, full_scene_path)
+    if save_error != OK:
+        printerr("Failed to save scene: " + error_name(save_error))
+        quit(1)
+
+    print_json({
+        "scenePath": full_scene_path,
+        "nodePath": str(params.node_path),
+        "propertyName": property_name,
+        "value": variant_to_json(node.get(property_name))
+    })
+
+func connect_signal_nodes(params):
+    if not params.has("scene_path") or not params.has("source_node_path") or not params.has("signal_name") or not params.has("target_node_path") or not params.has("method_name"):
+        printerr("scene_path, source_node_path, signal_name, target_node_path, and method_name are required")
+        quit(1)
+
+    var full_scene_path = to_res_path(params.scene_path)
+    if not FileAccess.file_exists(full_scene_path):
+        printerr("Scene file does not exist at: " + full_scene_path)
+        quit(1)
+
+    var scene = load(full_scene_path)
+    if not scene or not (scene is PackedScene):
+        printerr("Failed to load scene as PackedScene: " + full_scene_path)
+        quit(1)
+
+    var scene_root = scene.instantiate()
+    if not scene_root:
+        printerr("Failed to instantiate scene: " + full_scene_path)
+        quit(1)
+
+    var source_node = get_scene_node(scene_root, params.source_node_path)
+    if not source_node:
+        printerr("Source node not found: " + str(params.source_node_path))
+        quit(1)
+
+    var target_node = get_scene_node(scene_root, params.target_node_path)
+    if not target_node:
+        printerr("Target node not found: " + str(params.target_node_path))
+        quit(1)
+
+    var signal_name = str(params.signal_name)
+    var method_name = str(params.method_name)
+
+    if not source_node.has_signal(signal_name):
+        printerr("Source node does not expose signal: " + signal_name)
+        quit(1)
+
+    if not target_node.has_method(method_name):
+        printerr("Target node does not expose method: " + method_name)
+        quit(1)
+
+    var callable = Callable(target_node, method_name)
+    var already_connected = source_node.is_connected(signal_name, callable)
+    if not already_connected:
+        var connect_error = source_node.connect(signal_name, callable, CONNECT_PERSIST)
+        if connect_error != OK:
+            printerr("Failed to connect signal: " + error_name(connect_error))
+            quit(1)
+
+    var packed_scene = PackedScene.new()
+    var pack_result = packed_scene.pack(scene_root)
+    if pack_result != OK:
+        printerr("Failed to pack scene: " + error_name(pack_result))
+        quit(1)
+
+    var save_error = ResourceSaver.save(packed_scene, full_scene_path)
+    if save_error != OK:
+        printerr("Failed to save scene: " + error_name(save_error))
+        quit(1)
+
+    print_json({
+        "scenePath": full_scene_path,
+        "sourceNodePath": str(params.source_node_path),
+        "signalName": signal_name,
+        "targetNodePath": str(params.target_node_path),
+        "methodName": method_name,
+        "alreadyConnected": already_connected
+    })
+
+func validate_scene_internal(scene_path):
+    var full_scene_path = to_res_path(scene_path)
+    var result = {
+        "scenePath": full_scene_path,
+        "valid": true,
+        "errors": [],
+        "warnings": [],
+        "nodeCount": 0
+    }
+
+    if not FileAccess.file_exists(full_scene_path):
+        result.valid = false
+        result.errors.append("Scene file does not exist: " + full_scene_path)
+        return result
+
+    if not ResourceLoader.exists(full_scene_path):
+        result.warnings.append("ResourceLoader does not report this scene as an importable resource")
+
+    var scene = load(full_scene_path)
+    if not scene:
+        result.valid = false
+        result.errors.append("Scene failed to load")
+        return result
+
+    if not (scene is PackedScene):
+        result.valid = false
+        result.errors.append("Resource is not a PackedScene")
+        return result
+
+    var scene_root = scene.instantiate()
+    if not scene_root:
+        result.valid = false
+        result.errors.append("Scene failed to instantiate")
+        return result
+
+    var nodes = []
+    append_scene_nodes(scene_root, nodes)
+    result.nodeCount = nodes.size()
+
+    for node in nodes:
+        var script = node.get_script()
+        if script:
+            var script_path = script.resource_path
+            if script_path != "" and not FileAccess.file_exists(script_path):
+                result.valid = false
+                result.errors.append("Missing script on " + get_mcp_node_path(scene_root, node) + ": " + script_path)
+
+    var packed_scene = PackedScene.new()
+    var pack_result = packed_scene.pack(scene_root)
+    if pack_result != OK:
+        result.valid = false
+        result.errors.append("Scene failed to repack: " + error_name(pack_result))
+
+    return result
+
+func validate_scene(params):
+    if not params.has("scene_path"):
+        printerr("Scene path is required")
+        quit(1)
+
+    print_json(validate_scene_internal(params.scene_path))
+
+func validate_project(params):
+    var result = {
+        "valid": true,
+        "sceneCount": 0,
+        "scriptCount": 0,
+        "scenes": [],
+        "scripts": [],
+        "errors": [],
+        "warnings": []
+    }
+
+    var scenes = find_files("res://", ".tscn")
+    result.sceneCount = scenes.size()
+    for scene_path in scenes:
+        var scene_result = validate_scene_internal(scene_path)
+        result.scenes.append(scene_result)
+        if not scene_result.valid:
+            result.valid = false
+            for scene_error in scene_result.errors:
+                result.errors.append(scene_path + ": " + str(scene_error))
+        for scene_warning in scene_result.warnings:
+            result.warnings.append(scene_path + ": " + str(scene_warning))
+
+    var scripts = find_files("res://", ".gd")
+    result.scriptCount = scripts.size()
+    for script_path in scripts:
+        var script_result = {
+            "path": script_path,
+            "valid": true,
+            "errors": []
+        }
+        if not FileAccess.file_exists(script_path):
+            script_result.valid = false
+            script_result.errors.append("Script file does not exist")
+        else:
+            var script = load(script_path)
+            if not script:
+                script_result.valid = false
+                script_result.errors.append("Script failed to load")
+        if not script_result.valid:
+            result.valid = false
+            for script_error in script_result.errors:
+                result.errors.append(script_path + ": " + str(script_error))
+        result.scripts.append(script_result)
+
+    print_json(result)
+
+func parse_keycode(value):
+    if typeof(value) == TYPE_INT:
+        return int(value)
+
+    var key_text = str(value)
+    if key_text.is_valid_int():
+        return int(key_text)
+
+    var keycode = OS.find_keycode_from_string(key_text)
+    if keycode == 0:
+        keycode = OS.find_keycode_from_string(key_text.to_upper())
+    return keycode
+
+func parse_mouse_button(value):
+    if typeof(value) == TYPE_INT:
+        return int(value)
+
+    var button_name = str(value).to_lower()
+    match button_name:
+        "left":
+            return MOUSE_BUTTON_LEFT
+        "right":
+            return MOUSE_BUTTON_RIGHT
+        "middle":
+            return MOUSE_BUTTON_MIDDLE
+        "wheel_up":
+            return MOUSE_BUTTON_WHEEL_UP
+        "wheel_down":
+            return MOUSE_BUTTON_WHEEL_DOWN
+        "xbutton1":
+            return MOUSE_BUTTON_XBUTTON1
+        "xbutton2":
+            return MOUSE_BUTTON_XBUTTON2
+        _:
+            if button_name.is_valid_int():
+                return int(button_name)
+            return 0
+
+func input_event_from_json(data):
+    if typeof(data) != TYPE_DICTIONARY or not data.has("type"):
+        return null
+
+    var event_type = str(data.type).to_lower()
+    match event_type:
+        "key":
+            var key_event = InputEventKey.new()
+            var key_value = data.get("keycode", data.get("key", data.get("physical_keycode", 0)))
+            var keycode = parse_keycode(key_value)
+            if keycode == 0:
+                return null
+            if data.has("physical_keycode"):
+                key_event.physical_keycode = parse_keycode(data.physical_keycode)
+            if data.has("keycode") or data.has("key"):
+                key_event.keycode = keycode
+            if not data.has("physical_keycode") and not data.has("keycode") and not data.has("key"):
+                key_event.keycode = keycode
+            key_event.ctrl_pressed = bool(data.get("ctrl", data.get("ctrl_pressed", data.get("ctrlPressed", false))))
+            key_event.alt_pressed = bool(data.get("alt", data.get("alt_pressed", data.get("altPressed", false))))
+            key_event.shift_pressed = bool(data.get("shift", data.get("shift_pressed", data.get("shiftPressed", false))))
+            key_event.meta_pressed = bool(data.get("meta", data.get("meta_pressed", data.get("metaPressed", false))))
+            return key_event
+        "mouse_button":
+            var mouse_event = InputEventMouseButton.new()
+            var button_value = data.get("button_index", data.get("buttonIndex", data.get("button", 0)))
+            var button_index = parse_mouse_button(button_value)
+            if button_index == 0:
+                return null
+            mouse_event.button_index = button_index
+            return mouse_event
+        "joypad_button":
+            var joypad_button_event = InputEventJoypadButton.new()
+            joypad_button_event.button_index = int(data.get("button_index", data.get("buttonIndex", 0)))
+            return joypad_button_event
+        "joypad_motion":
+            var joypad_motion_event = InputEventJoypadMotion.new()
+            joypad_motion_event.axis = int(data.get("axis", 0))
+            joypad_motion_event.axis_value = float(data.get("axis_value", data.get("axisValue", 0.0)))
+            return joypad_motion_event
+        _:
+            return null
+
+func configure_input_action(params):
+    if not params.has("action_name"):
+        printerr("action_name is required")
+        quit(1)
+
+    var action_name = str(params.action_name)
+    var replace_events = bool(params.get("replace", true))
+    var deadzone = float(params.get("deadzone", 0.5))
+
+    if not InputMap.has_action(action_name):
+        InputMap.add_action(action_name, deadzone)
+    else:
+        InputMap.action_set_deadzone(action_name, deadzone)
+
+    if replace_events:
+        InputMap.action_erase_events(action_name)
+
+    var added_events = []
+    if params.has("events") and typeof(params.events) == TYPE_ARRAY:
+        for event_data in params.events:
+            var input_event = input_event_from_json(event_data)
+            if not input_event:
+                printerr("Invalid input event: " + JSON.stringify(event_data))
+                quit(1)
+            InputMap.action_add_event(action_name, input_event)
+            added_events.append(input_event.as_text())
+
+    var current_events = InputMap.action_get_events(action_name)
+    ProjectSettings.set_setting("input/" + action_name, {
+        "deadzone": InputMap.action_get_deadzone(action_name),
+        "events": current_events
+    })
+
+    var save_error = ProjectSettings.save()
+    if save_error != OK:
+        printerr("Failed to save project settings: " + error_name(save_error))
+        quit(1)
+
+    var event_texts = []
+    for saved_event in current_events:
+        event_texts.append(saved_event.as_text())
+
+    print_json({
+        "actionName": action_name,
+        "deadzone": InputMap.action_get_deadzone(action_name),
+        "replace": replace_events,
+        "addedEvents": added_events,
+        "events": event_texts
+    })
+
+func add_autoload(params):
+    if not params.has("autoload_name") or not params.has("resource_path"):
+        printerr("autoload_name and resource_path are required")
+        quit(1)
+
+    var autoload_name = str(params.autoload_name)
+    var resource_path = to_res_path(params.resource_path)
+    var singleton = bool(params.get("singleton", true))
+
+    if not FileAccess.file_exists(resource_path):
+        printerr("Autoload resource does not exist at: " + resource_path)
+        quit(1)
+
+    var loaded_resource = load(resource_path)
+    if not loaded_resource:
+        printerr("Autoload resource failed to load: " + resource_path)
+        quit(1)
+
+    var setting_name = "autoload/" + autoload_name
+    var previous_value = null
+    if ProjectSettings.has_setting(setting_name):
+        previous_value = ProjectSettings.get_setting(setting_name)
+
+    var setting_value = resource_path
+    if singleton:
+        setting_value = "*" + resource_path
+
+    ProjectSettings.set_setting(setting_name, setting_value)
+    var save_error = ProjectSettings.save()
+    if save_error != OK:
+        printerr("Failed to save project settings: " + error_name(save_error))
+        quit(1)
+
+    print_json({
+        "autoloadName": autoload_name,
+        "resourcePath": resource_path,
+        "singleton": singleton,
+        "previousValue": previous_value,
+        "value": setting_value
+    })
 
 # Create a new scene with a specified root node type
 func create_scene(params):
