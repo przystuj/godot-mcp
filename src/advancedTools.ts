@@ -60,7 +60,7 @@ function tool(name: string, description: string, properties: Record<string, any>
 }
 
 export const ADVANCED_TOOLS: any[] = [
-  tool('run_scene_for_seconds', 'Load and instantiate a scene headlessly and return runtime-style scene tree information', {
+  tool('run_scene_for_seconds', 'Load and instantiate a scene headlessly and return captured runtime output', {
     scenePath,
     seconds: { type: 'number', description: 'Requested runtime duration in seconds' },
   }, ['scenePath']),
@@ -329,6 +329,37 @@ function validateFields(server: any, args: any, fields: string[] | undefined, va
   return null;
 }
 
+function splitNonEmptyLines(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0);
+}
+
+function splitOperationOutputLines(stdout: string): string[] {
+  const lines = stdout.split(/\r?\n/);
+  let resultLineIndex = -1;
+
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index].trim();
+    if (!line || (!line.startsWith('{') && !line.startsWith('['))) {
+      continue;
+    }
+
+    try {
+      JSON.parse(line);
+      resultLineIndex = index;
+      break;
+    } catch {
+      continue;
+    }
+  }
+
+  return lines
+    .filter((line, index) => index !== resultLineIndex && line.trim().length > 0)
+    .map((line) => line.trimEnd());
+}
+
 export async function handleAdvancedTool(server: any, name: string, rawArgs: any): Promise<any> {
   const spec = SPECS[name];
   if (!spec) {
@@ -396,11 +427,26 @@ export async function handleAdvancedTool(server: any, name: string, rawArgs: any
     delete params.projectPath;
 
     const { stdout, stderr } = await server.executeOperation(spec.operation, params, args.projectPath);
-    if (stderr && !server.extractJsonFromOperationOutput(stdout)) {
+    const parsedOutput = server.extractJsonFromOperationOutput(stdout);
+    if (stderr && !parsedOutput) {
       return server.createErrorResponse(
         `Failed to execute ${name}: ${stderr}`,
         ['Check the tool arguments and verify Godot can load the referenced project resources']
       );
+    }
+
+    if (name === 'run_scene_for_seconds') {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              output: splitOperationOutputLines(stdout),
+              errors: splitNonEmptyLines(stderr),
+            }, null, 2),
+          },
+        ],
+      };
     }
 
     return {

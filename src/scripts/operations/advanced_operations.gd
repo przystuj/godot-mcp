@@ -495,14 +495,10 @@ func create_scene_from_spec(params):
 
 func run_scene_for_seconds(params):
     var seconds = float(params.get("seconds", 1.0))
-    var scene_root = load_scene_root(params.scene_path)
-    var nodes = []
-    append_scene_nodes(scene_root, nodes)
+    load_scene_root(params.scene_path)
     print_json({
         "scenePath": to_res_path(params.scene_path),
         "secondsRequested": seconds,
-        "nodeCount": nodes.size(),
-        "tree": node_to_json(scene_root, scene_root),
         "note": "Scene was loaded and instantiated in a headless one-shot operation."
     })
 
