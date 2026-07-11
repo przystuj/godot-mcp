@@ -50,7 +50,7 @@ func _init():
         log_error("JSON Error: " + json.get_error_message() + " at line " + str(json.get_error_line()))
         quit(1)
     
-    if not params:
+    if params == null:
         log_error("Failed to parse JSON parameters: " + params_json)
         quit(1)
     
@@ -667,6 +667,37 @@ func validate_scene(params):
 
     print_json(validate_scene_internal(params.scene_path))
 
+func validate_script_internal(script_path):
+    var full_script_path = to_res_path(script_path)
+    var result = {
+        "path": full_script_path,
+        "valid": true,
+        "errors": [],
+        "warnings": []
+    }
+
+    if not FileAccess.file_exists(full_script_path):
+        result.valid = false
+        result.errors.append("Script file does not exist")
+        return result
+
+    var source = FileAccess.get_file_as_string(full_script_path)
+    var open_error = FileAccess.get_open_error()
+    if open_error != OK:
+        result.valid = false
+        result.errors.append("Script failed to read: " + error_string(open_error) + " (" + str(open_error) + ")")
+        return result
+
+    var script = GDScript.new()
+    script.resource_path = full_script_path
+    script.source_code = source
+    var reload_error = script.reload(false)
+    if reload_error != OK:
+        result.valid = false
+        result.errors.append("Script failed to parse: " + error_string(reload_error) + " (" + str(reload_error) + ")")
+
+    return result
+
 func validate_project(params):
     var result = {
         "valid": true,
@@ -693,23 +724,13 @@ func validate_project(params):
     var scripts = find_files("res://", ".gd")
     result.scriptCount = scripts.size()
     for script_path in scripts:
-        var script_result = {
-            "path": script_path,
-            "valid": true,
-            "errors": []
-        }
-        if not FileAccess.file_exists(script_path):
-            script_result.valid = false
-            script_result.errors.append("Script file does not exist")
-        else:
-            var script = load(script_path)
-            if not script:
-                script_result.valid = false
-                script_result.errors.append("Script failed to load")
+        var script_result = validate_script_internal(script_path)
         if not script_result.valid:
             result.valid = false
             for script_error in script_result.errors:
                 result.errors.append(script_path + ": " + str(script_error))
+        for script_warning in script_result.warnings:
+            result.warnings.append(script_path + ": " + str(script_warning))
         result.scripts.append(script_result)
 
     print_json(result)
