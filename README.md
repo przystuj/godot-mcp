@@ -1,237 +1,86 @@
-# Godot MCP
+﻿# Godot MCP for Codex in Rider
 
-[![Github-sponsors](https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA)](https://github.com/sponsors/Coding-Solo)
+Seven tools for feedback that requires the Godot engine. Use Codex and Rider for source edits, search, refactoring, builds, and debugging. This server operates on saved files and its own play session; it does not attach to the open Godot editor or Rider debugger.
 
-[![](https://badge.mcpx.dev?type=server 'MCP Server')](https://modelcontextprotocol.io/introduction)
-[![Made with Godot](https://img.shields.io/badge/Made%20with-Godot-478CBF?style=flat&logo=godot%20engine&logoColor=white)](https://godotengine.org)
-[![](https://img.shields.io/badge/Node.js-339933?style=flat&logo=nodedotjs&logoColor=white 'Node.js')](https://nodejs.org/en/download/)
-[![](https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=white 'TypeScript')](https://www.typescriptlang.org/)
+## Tools
 
-[![](https://img.shields.io/github/last-commit/Coding-Solo/godot-mcp 'Last Commit')](https://github.com/Coding-Solo/godot-mcp/commits/main)
-[![](https://img.shields.io/github/stars/Coding-Solo/godot-mcp 'Stars')](https://github.com/Coding-Solo/godot-mcp/stargazers)
-[![](https://img.shields.io/github/forks/Coding-Solo/godot-mcp 'Forks')](https://github.com/Coding-Solo/godot-mcp/network/members)
-[![](https://img.shields.io/badge/License-MIT-red.svg 'MIT License')](https://opensource.org/licenses/MIT)
+| Tool | Purpose |
+|------|---------|
+| `inspect_scene` | Load a saved scene and inspect resolved nodes, including instantiated child scenes. Filter by `nodePath`; request properties and signal connections explicitly. |
+| `inspect_resource` | Inspect engine-loaded resources, including binary/imported resources. Defaults to type and stored property names; request values with `propertyNames` or `includeProperties`. |
+| `validate_scene` | Load, instantiate, and repack a scene in memory without saving it. |
+| `validate_project` | Validate saved scenes and GDScript. Return counts and diagnostics with file/line parse errors. Use Rider/build tools for C#. |
+| `run_project` | Start one managed play session, optionally a specific `scene`. Defaults to `headless: true`; set it to `false` for a game window. |
+| `get_debug_output` | Read new stdout/stderr lines, process status, and exit code. Logs survive exit and stop. |
+| `stop_project` | Stop the managed session without replaying logs. |
 
+Project operations require `projectPath`. Scene/resource paths may be project-relative or start with `res://`. Snake-case aliases for camel-case path and inspection arguments remain accepted.
 
-```text
-                           (((((((             (((((((
-                        (((((((((((           (((((((((((
-                        (((((((((((((       (((((((((((((
-                        (((((((((((((((((((((((((((((((((
-                        (((((((((((((((((((((((((((((((((
-         (((((      (((((((((((((((((((((((((((((((((((((((((      (((((
-       (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-     ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-    ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-      (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-        (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-         (((((((((((@@@@@@@(((((((((((((((((((((((((((@@@@@@@(((((((((((
-         (((((((((@@@@,,,,,@@@(((((((((((((((((((((@@@,,,,,@@@@(((((((((
-         ((((((((@@@,,,,,,,,,@@(((((((@@@@@(((((((@@,,,,,,,,,@@@((((((((
-         ((((((((@@@,,,,,,,,,@@(((((((@@@@@(((((((@@,,,,,,,,,@@@((((((((
-         (((((((((@@@,,,,,,,@@((((((((@@@@@((((((((@@,,,,,,,@@@(((((((((
-         ((((((((((((@@@@@@(((((((((((@@@@@(((((((((((@@@@@@((((((((((((
-         (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-         (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-         @@@@@@@@@@@@@((((((((((((@@@@@@@@@@@@@((((((((((((@@@@@@@@@@@@@
-         ((((((((( @@@(((((((((((@@(((((((((((@@(((((((((((@@@ (((((((((
-         (((((((((( @@((((((((((@@@(((((((((((@@@((((((((((@@ ((((((((((
-          (((((((((((@@@@@@@@@@@@@@(((((((((((@@@@@@@@@@@@@@(((((((((((
-           (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-              (((((((((((((((((((((((((((((((((((((((((((((((((((((
-                 (((((((((((((((((((((((((((((((((((((((((((((((
-                        (((((((((((((((((((((((((((((((((
+Inspection loads a fresh scene/resource; it does not report live game state or run the gameplay loop. Loading and instantiation can execute project code. Allowed roots restrict tool targets, not the capabilities of that code.
 
+## Response limits
 
-                          /$$      /$$  /$$$$$$  /$$$$$$$
-                         | $$$    /$$$ /$$__  $$| $$__  $$
-                         | $$$$  /$$$$| $$  \__/| $$  \ $$
-                         | $$ $$/$$ $$| $$      | $$$$$$$/
-                         | $$  $$$| $$| $$      | $$____/
-                         | $$\  $ | $$| $$    $$| $$
-                         | $$ \/  | $$|  $$$$$$/| $$
-                         |__/     |__/ \______/ |__/
-```
+- Inspection and validation accept `offset` and `limit` (default 50, maximum 200), with `nextOffset` when more results exist. Scene nodes are a flat list with paths; resource pages contain property names or values; validation pages contain diagnostics with full error/warning counts.
+- Properties and signal connections are opt-in. `propertyNames` selects specific values and overrides `includeProperties`.
+- Validation returns counts and diagnostics, without per-file success records. Failed validation sets the MCP result's `isError` flag.
+- JSON is compact and responses stay below 16,000 characters. Oversized engine data is wrapped as `{ result, truncated: true, omitted, hint }`. Narrow the subtree, property selection, or page size when this occurs. Long individual values may be shortened.
+- Logs retain the latest 1,000 nonempty lines, capped at 2,048 characters plus a truncation marker per line (less for heavily escaped text). Reads default to 50 lines, allow at most 100, and obey a size budget. Lines have `id`, `stream`, and `text`.
+- Log reads return `nextCursor` and `hasMore`. Omit `cursor` to consume unread lines; pass a previous cursor to replay. `cursor: 0` starts at the oldest retained line. `dropped` reports evicted lines. Starting another session resets history and cursors.
+- Inspection/validation operations have a 60-second timeout and a 4 MiB capture limit. Play sessions run until they exit or are stopped.
 
-A Model Context Protocol (MCP) server for interacting with the Godot game engine.
-
-## Introduction
-
-Godot MCP enables AI agents to launch the Godot editor, run projects, capture debug output, and control project execution. This direct feedback loop helps agents understand what works and what doesn't in real Godot projects, leading to better code generation and debugging assistance.
-
-## Features
-
-- **Launch Godot Editor**: Open the Godot editor for a specific project
-- **Run Godot Projects**: Execute Godot projects in debug mode
-- **Capture Debug Output**: Retrieve console output and error messages
-- **Control Execution**: Start and stop Godot projects programmatically
-- **Get Godot Version**: Retrieve the installed Godot version
-- **List Godot Projects**: Find Godot projects in a specified directory
-- **Project Analysis**: Get detailed information about project structure
-- **Scene Management**:
-  - Create new scenes with specified root node types
-  - Add nodes to existing scenes with customizable properties
-  - Load sprites and textures into Sprite2D nodes
-  - Export 3D scenes as MeshLibrary resources for GridMap
-  - Save scenes with options for creating variants
-- **UID Management** (for Godot 4.4+):
-  - Get UID for specific files
-  - Update UID references by resaving resources
-
-## Requirements
-
-- [Godot Engine](https://godotengine.org/download) installed on your system
-- Node.js (>=18.0.0) and npm
-- An AI agent that supports MCP
-
-## Quick Start
-
-### Claude Code
-
-```bash
-claude mcp add godot -e GODOT_PROJECT_ROOT=/path/to/your/project -- npx @coding-solo/godot-mcp
-```
-
-Restart Claude Code and your Godot MCP tools are available for the configured project root.
-
-With environment variables:
-
-```bash
-claude mcp add godot -e GODOT_PROJECT_ROOT=/path/to/your/project -e GODOT_PATH=/path/to/godot -- npx @coding-solo/godot-mcp
-```
-
-<details>
-<summary><strong>Cline</strong></summary>
-
-Add to your Cline MCP settings file (`~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`):
+Example arguments for `inspect_scene`:
 
 ```json
 {
-  "mcpServers": {
-    "godot": {
-      "command": "npx",
-      "args": ["@coding-solo/godot-mcp"],
-      "env": {
-        "GODOT_PROJECT_ROOT": "/path/to/your/project"
-      },
-      "disabled": false
-    }
-  }
+  "projectPath": "S:/Dev/MyGame",
+  "scenePath": "scenes/player.tscn",
+  "nodePath": "root",
+  "propertyNames": ["position"],
+  "limit": 1
 }
 ```
 
-</details>
+## Build and connect
 
-<details>
-<summary><strong>Cursor</strong></summary>
+Requires Godot 4.x, Node.js 18 or newer, and npm. From this package directory:
 
-**Using the Cursor UI:**
-
-1. Go to **Cursor Settings** > **Features** > **MCP**
-2. Click on the **+ Add New MCP Server** button
-3. Fill out the form:
-   - Name: `godot`
-   - Type: `command`
-   - Command: `npx @coding-solo/godot-mcp`
-4. Click "Add"
-5. You may need to press the refresh button in the top right corner of the MCP server card to populate the tool list
-
-For project tools, configure `GODOT_PROJECT_ROOT` using project-specific configuration below.
-
-**Using Project-Specific Configuration:**
-
-Create a file at `.cursor/mcp.json` in your project directory:
-
-```json
-{
-  "mcpServers": {
-    "godot": {
-      "command": "npx",
-      "args": ["@coding-solo/godot-mcp"],
-      "env": {
-        "GODOT_PROJECT_ROOT": "/path/to/your/project"
-      }
-    }
-  }
-}
-```
-
-</details>
-
-<details>
-<summary><strong>Other MCP Clients</strong></summary>
-
-For any MCP-compatible client, use this configuration:
-
-```json
-{
-  "mcpServers": {
-    "godot": {
-      "command": "npx",
-      "args": ["@coding-solo/godot-mcp"],
-      "env": {
-        "GODOT_PROJECT_ROOT": "/path/to/your/project",
-        "GODOT_PATH": "/path/to/godot",
-        "DEBUG": "false"
-      }
-    }
-  }
-}
-```
-
-</details>
-
-### Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `GODOT_PATH` | Path to the Godot executable (overrides automatic detection) |
-| `GODOT_PROJECT_ROOT` | Required allowlist root for project tools. Set this to your Godot project directory or a parent directory containing trusted projects. |
-| `GODOT_PROJECT_ROOTS` | Optional allowlist of multiple roots separated by the platform path delimiter (`;` on Windows, `:` on macOS/Linux). Overrides `GODOT_PROJECT_ROOT`. |
-| `DEBUG` | Set to `"true"` to enable detailed server-side debug logging |
-| `GODOT_DEBUG` | Set to `"true"` to pass `--debug-godot` to bundled Godot operations. This can print environment and filesystem details, so leave it off by default. |
-
-<details>
-<summary><strong>Building from Source</strong></summary>
-
-```bash
-git clone https://github.com/Coding-Solo/godot-mcp.git
-cd godot-mcp
-npm install
+```sh
+npm ci
 npm run build
 ```
 
-Then point your MCP client to `build/index.js` instead of using `npx`.
+Configure your MCP client to launch this local build over stdio:
 
-</details>
+| Setting | Value |
+|---------|-------|
+| Command | `node` or the full path to `node.exe` |
+| Arguments | Absolute path to this checkout's `build/index.js` |
+| Environment | `GODOT_PATH` and `GODOT_PROJECT_ROOT` as below |
 
+Use the local build to get the reduced tool set. Restart the MCP connection after rebuilding to refresh cached tools.
 
-## Architecture
+| Variable | Purpose |
+|----------|---------|
+| `GODOT_PATH` | Godot executable. Otherwise PATH and common installation locations are checked. |
+| `GODOT_PROJECT_ROOT` | Required allowed project directory, or parent containing trusted projects. |
+| `GODOT_PROJECT_ROOTS` | Multiple allowed roots separated by `;` on Windows or `:` elsewhere. Overrides `GODOT_PROJECT_ROOT`. |
+| `DEBUG` | Set to `true` for server diagnostics on stderr. |
+| `GODOT_DEBUG` | Set to `true` for bundled operation diagnostics; off by default. |
 
-The Godot MCP server uses a bundled GDScript approach for complex operations:
+## Migration
 
-1. **Direct Commands**: Simple operations like launching the editor or getting project info use Godot's built-in CLI commands directly.
-2. **Bundled Operations Script**: Complex operations like creating scenes or adding nodes use a single, comprehensive GDScript file (`godot_operations.gd`) that handles all operations.
+Editing, project discovery/metadata, editor launch, standalone version/UID, import-metadata, and static asset-scanning tools have been removed from discovery and dispatch. Use source edits, Rider, the Godot editor, or the shell for those tasks. One-shot input, method-call, signal-wait, and runtime-tree tools were also removed: they did not control the managed game session.
 
-The bundled script accepts operation type and parameters as JSON, allowing for flexible and dynamic operation execution without generating temporary files for each operation.
+This intentionally breaks the old interface. Scene inspection returns paged `nodes`; validation returns paged `diagnostics`; debug output returns cursor-based `lines` instead of replaying stdout/stderr arrays.
 
-## Troubleshooting
+## Verification
 
-- **Godot Not Found**: Set the `GODOT_PATH` environment variable to your Godot executable path
-- **Connection Issues**: Ensure the server is running and restart your AI assistant
-- **Project Path Not Allowed**: Set `GODOT_PROJECT_ROOT` to your Godot project directory or an allowed parent directory
-- **Invalid Project Path**: Ensure the path points to a directory containing a `project.godot` file
-- **Build Issues**: Make sure all dependencies are installed by running `npm install`
+```sh
+npm test
+```
 
-<details>
-<summary><strong>Cursor-Specific Issues</strong></summary>
-
-- Ensure the MCP server shows up and is enabled in Cursor settings (Settings > MCP)
-- MCP tools can only be run using the Agent chat profile (Cursor Pro or Business subscription)
-- Keep manual approval enabled for tools that launch Godot or modify project files
-
-</details>
+Tests cover the tool surface, argument validation, response bounds, and log retention/cursors. Set `GODOT_PATH` to also run the MCP stdio integration test against the engine in a temporary project. It checks inspection, validation failures, path restrictions, removed tools, and session lifecycle. Without that variable, the engine test is explicitly skipped.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+[MIT](LICENSE).

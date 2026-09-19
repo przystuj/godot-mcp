@@ -1,13 +1,13 @@
 {
   "name": "godot-mcp",
   "version": "0.1.1",
-  "description": "MCP server for interfacing with Godot game engine. Provides tools for launching the editor, running projects, and capturing debug output.",
+  "description": "Focused Godot engine inspection, validation and play-session feedback for development with Codex in Rider.",
   "keywords": [
     "godot",
     "mcp",
     "ai",
-    "claude",
-    "cline"
+    "codex",
+    "rider"
   ],
   "homepage": "https://github.com/Coding-Solo/godot-mcp",
   "bugs": {
@@ -28,6 +28,7 @@
   ],
   "scripts": {
     "build": "tsc && node scripts/build.js",
+    "test": "npm run build && node --test tests/*.test.mjs",
     "inspector": "npx @modelcontextprotocol/inspector build/index.js",
     "prepare": "npm run build",
     "watch": "tsc --watch"
