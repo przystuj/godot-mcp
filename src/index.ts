@@ -308,20 +308,36 @@ export class GodotServer {
         return value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
     }
 
-    private extractGodotParseDiagnostics(output: string): string[] {
+    private extractValidationStderr(stderr: string): string {
+        const startMarker = '[MCP_VALIDATION_START]';
+        const endMarker = '[MCP_VALIDATION_END]';
+        const startIndex = stderr.lastIndexOf(startMarker);
+        if (startIndex < 0) {
+            return stderr;
+        }
+
+        const contentStart = startIndex + startMarker.length;
+        const endIndex = stderr.indexOf(endMarker, contentStart);
+        return stderr.slice(contentStart, endIndex >= 0 ? endIndex : undefined);
+    }
+
+    private extractGodotScriptDiagnostics(output: string): string[] {
         const diagnostics: string[] = [];
         const lines = this.stripAnsiCodes(output).split(/\r?\n/);
-        let pendingParseMessage: string | null = null;
+        let pendingDiagnostic: {kind: string; message: string} | null = null;
 
         for (const rawLine of lines) {
             const line = rawLine.trim();
-            const parseMatch = line.match(/^SCRIPT ERROR:\s*Parse Error:\s*(.*)$/);
-            if (parseMatch) {
-                pendingParseMessage = parseMatch[1]?.trim() || 'Parse error';
+            const diagnosticMatch = line.match(/^SCRIPT ERROR:\s*(Parse|Compile) Error:\s*(.*)$/);
+            if (diagnosticMatch) {
+                pendingDiagnostic = {
+                    kind: diagnosticMatch[1],
+                    message: diagnosticMatch[2]?.trim() || `${diagnosticMatch[1]} error`,
+                };
                 continue;
             }
 
-            if (!pendingParseMessage) {
+            if (!pendingDiagnostic) {
                 continue;
             }
 
@@ -330,11 +346,9 @@ export class GodotServer {
                 const scriptPath = locationMatch[1].endsWith('.mcp_validate')
                     ? locationMatch[1].slice(0, -'.mcp_validate'.length)
                     : locationMatch[1];
-                const message = pendingParseMessage.startsWith('Parse Error:')
-                    ? pendingParseMessage
-                    : `Parse Error: ${pendingParseMessage}`;
+                const message = `${pendingDiagnostic.kind} Error: ${pendingDiagnostic.message}`;
                 diagnostics.push(`${scriptPath}:${locationMatch[2]}: ${message}`);
-                pendingParseMessage = null;
+                pendingDiagnostic = null;
             }
         }
 
@@ -350,7 +364,8 @@ export class GodotServer {
         delete parsed.scenes;
         delete parsed.scripts;
 
-        const parseDiagnostics = this.extractGodotParseDiagnostics(`${stdout}\n${stderr}`);
+        const validationStderr = this.extractValidationStderr(stderr);
+        const parseDiagnostics = this.extractGodotScriptDiagnostics(`${stdout}\n${validationStderr}`);
         const diagnosticsByPath = new Map<string, string[]>();
         for (const diagnostic of parseDiagnostics) {
             const match = diagnostic.match(/^(.+):\d+:\s/);
@@ -373,7 +388,7 @@ export class GodotServer {
                 continue;
             }
 
-            const scriptParseMatch = error.match(/^(.+): Script failed to parse:/);
+            const scriptParseMatch = error.match(/^(.+): Script failed to (?:parse|load)/);
             const pathDiagnostics = scriptParseMatch ? diagnosticsByPath.get(scriptParseMatch[1]) : undefined;
             if (pathDiagnostics && pathDiagnostics.length > 0) {
                 for (const diagnostic of pathDiagnostics) {
@@ -390,8 +405,8 @@ export class GodotServer {
             errors.push(diagnostic);
         }
 
-        for (const line of this.stripAnsiCodes(stderr).split(/\r?\n/)) {
-            if (/^(SCRIPT ERROR:|ERROR:)/.test(line) && !line.startsWith('SCRIPT ERROR: Parse Error:')) {
+        for (const line of this.stripAnsiCodes(validationStderr).split(/\r?\n/)) {
+            if (/^(SCRIPT ERROR:|ERROR:)/.test(line) && !/^SCRIPT ERROR:\s*(Parse|Compile) Error:/.test(line)) {
                 errors.push(line.trim());
             }
         }

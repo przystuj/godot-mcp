@@ -3,6 +3,8 @@ extends SceneTree
 
 # Debug mode flag
 var debug_mode = false
+var pending_operation = ""
+var pending_params = null
 
 func _init():
     var args = OS.get_cmdline_args()
@@ -15,6 +17,7 @@ func _init():
     if script_index == -1:
         log_error("Could not find --script argument")
         quit(1)
+        return
 
     # The operation should be 2 positions after the script path (script_index + 1 is the script path itself)
     var operation_index = script_index + 2
@@ -25,6 +28,7 @@ func _init():
         log_error("Usage: godot --headless --script godot_operations.gd <operation> <json_params>")
         log_error("Not enough command-line arguments provided.")
         quit(1)
+        return
 
     # Log all arguments for debugging
     log_debug("All arguments: " + str(args))
@@ -32,43 +36,52 @@ func _init():
     log_debug("Operation index: " + str(operation_index))
     log_debug("Params index: " + str(params_index))
 
-    var operation = args[operation_index]
+    pending_operation = args[operation_index]
     var params_json = args[params_index]
 
-    log_info("Operation: " + operation)
+    log_info("Operation: " + pending_operation)
     log_debug("Params JSON: " + params_json)
 
     # Parse JSON using Godot 4.x API
     var json = JSON.new()
     var error = json.parse(params_json)
-    var params = null
-
     if error == OK:
-        params = json.get_data()
+        pending_params = json.get_data()
     else:
         log_error("Failed to parse JSON parameters: " + params_json)
         log_error("JSON Error: " + json.get_error_message() + " at line " + str(json.get_error_line()))
         quit(1)
+        return
 
-    if params == null:
+    if pending_params == null:
         log_error("Failed to parse JSON parameters: " + params_json)
         quit(1)
+        return
 
-    log_info("Executing operation: " + operation)
+    # Project autoloads are created after SceneTree._init() returns. Defer all
+    # resource work so scripts compile with the same globals as the project.
+    call_deferred("execute_pending_operation")
 
-    match operation:
+func execute_pending_operation():
+    log_info("Executing operation: " + pending_operation)
+    if pending_operation.begins_with("validate_"):
+        printerr("[MCP_VALIDATION_START]")
+
+    match pending_operation:
         "inspect_scene":
-            inspect_scene(params)
+            inspect_scene(pending_params)
         "inspect_resource":
-            inspect_resource(params)
+            inspect_resource(pending_params)
         "validate_scene":
-            validate_scene(params)
+            validate_scene(pending_params)
         "validate_project":
-            validate_project(params)
+            validate_project(pending_params)
         _:
-            log_error("Unknown operation: " + operation)
+            log_error("Unknown operation: " + pending_operation)
             quit(1)
             return
+    if pending_operation.begins_with("validate_"):
+        printerr("[MCP_VALIDATION_END]")
     quit()
 
 # Logging functions
@@ -90,6 +103,14 @@ func to_res_path(path):
 
 func print_json(value):
     print(JSON.stringify(value))
+
+func get_scene_node(scene_root, node_path):
+    var normalized_path = str(node_path)
+    if normalized_path == "" or normalized_path == "." or normalized_path == "root":
+        return scene_root
+    if normalized_path.begins_with("root/"):
+        normalized_path = normalized_path.substr(5)
+    return scene_root.get_node_or_null(normalized_path)
 
 func get_mcp_node_path(scene_root, node):
     if node == scene_root:
@@ -400,20 +421,15 @@ func validate_script_internal(script_path):
         result.errors.append("Script file does not exist")
         return result
 
-    var source = FileAccess.get_file_as_string(full_script_path)
-    var open_error = FileAccess.get_open_error()
-    if open_error != OK:
-        result.errors.append("Script failed to read: " + error_string(open_error) + " (" + str(open_error) + ")")
+    # Use the project resource cache so scripts already loaded through scenes or
+    # autoloads are not duplicated under the same resource path.
+    var script = load(full_script_path)
+    if not script:
+        result.errors.append("Script failed to load")
         return result
 
-    var script = GDScript.new()
-    script.resource_path = full_script_path
-    script.source_code = source
-    var reload_error = script.reload(false)
-    if reload_error == ERR_PARSE_ERROR:
-        result.errors.append("Script failed to parse: " + error_string(reload_error) + " (" + str(reload_error) + ")")
-    elif reload_error != OK and reload_error != ERR_COMPILATION_FAILED:
-        result.errors.append("Script failed to validate: " + error_string(reload_error) + " (" + str(reload_error) + ")")
+    if not (script is GDScript):
+        result.errors.append("Resource is not a GDScript")
 
     return result
 

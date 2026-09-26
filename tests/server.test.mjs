@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {mkdtemp, writeFile, rm} from 'node:fs/promises';
+import {mkdtemp, readFile, writeFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
@@ -54,14 +54,22 @@ test('tool surface stays small and rejects malformed arguments', () => {
     assert.equal(validateArguments('get_debug_output', {limit: 50}), undefined);
 });
 
+test('Godot inspection script includes its node path resolver', async () => {
+    const script = await readFile(resolve('build/scripts/godot_operations.gd'), 'utf8');
+    assert.match(script, /^func get_scene_node\(scene_root, node_path\):$/m);
+    assert.match(script, /var selected_root = get_scene_node\(scene_root, params\.get\("node_path", "root"\)\)/);
+});
+
 test('Godot MCP integration: inspection, validation, removed tools and session lifecycle', {
     skip: !process.env.GODOT_PATH && 'Set GODOT_PATH to run engine integration checks', timeout: 60000,
 }, async () => {
     const projectPath = await mkdtemp(join(tmpdir(), 'godot-mcp-test-'));
     const client = new Client({name: 'test', version: '1'});
+    const serverEnv = {...process.env, GODOT_PROJECT_ROOT: projectPath};
+    delete serverEnv.GODOT_PROJECT_ROOTS;
     const transport = new StdioClientTransport({
         command: process.execPath, args: [resolve('build/index.js')],
-        env: {...process.env, GODOT_PROJECT_ROOT: projectPath, GODOT_PROJECT_ROOTS: ''}, stderr: 'pipe'
+        env: serverEnv, stderr: 'pipe'
     });
     let serverErrors = '';
     transport.stderr?.on('data', data => {
@@ -74,9 +82,10 @@ test('Godot MCP integration: inspection, validation, removed tools and session l
         return JSON.parse(response.content[0].text);
     };
     try {
-        await writeFile(join(projectPath, 'project.godot'), 'config_version=5\n[application]\nrun/main_scene="res://main.tscn"\n[rendering]\nrenderer/rendering_method="gl_compatibility"\n');
+        await writeFile(join(projectPath, 'project.godot'), 'config_version=5\n[application]\nrun/main_scene="res://main.tscn"\n[autoload]\nGlobals="*res://globals.gd"\n[rendering]\nrenderer/rendering_method="gl_compatibility"\n');
         await writeFile(join(projectPath, 'main.tscn'), '[gd_scene load_steps=2 format=3]\n[ext_resource type="Script" path="res://main.gd" id="1"]\n[node name="Root" type="Node2D"]\nscript = ExtResource("1")\n[node name="Child" type="Node2D" parent="."]\nposition = Vector2(10, 20)\n');
-        await writeFile(join(projectPath, 'main.gd'), 'extends Node2D\nfunc _ready():\n    print("session complete")\n    get_tree().quit()\n');
+        await writeFile(join(projectPath, 'globals.gd'), 'extends Node\nvar value = "autoload available"\nfunc _ready():\n    push_error("autoload runtime noise")\n');
+        await writeFile(join(projectPath, 'main.gd'), 'extends Node2D\nfunc _ready():\n    print(Globals.value)\n    print("session complete")\n    get_tree().quit()\n');
         await writeFile(join(projectPath, 'material.tres'), '[gd_resource type="StandardMaterial3D" format=3]\n[resource]\nroughness = 0.25\n');
         await client.connect(transport);
         assert.equal((await client.listTools()).tools.length, 7);
@@ -99,7 +108,7 @@ test('Godot MCP integration: inspection, validation, removed tools and session l
         assert.equal((await invoke('validate_scene', {projectPath, scenePath: 'main.tscn'})).valid, true);
         const valid = await invoke('validate_project', {projectPath});
         assert.equal(valid.valid, true);
-        assert.equal(valid.scriptCount, 1);
+        assert.equal(valid.scriptCount, 2);
         assert.equal(valid.scenes, undefined);
         await writeFile(join(projectPath, 'broken.gd'), 'extends Node\nfunc broken(:\n');
         const invalid = await invoke('validate_project', {projectPath, limit: 1}, true);
